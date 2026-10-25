@@ -419,44 +419,65 @@ def connect(sqlite_path):
     return connection
 
 
+
 def init_schema(create_tables, migrate_database, get_connection):
-    """Replaces the two import-time calls at the bottom of database.py.
-    SQLite: runs both, exactly as before.
-    Turso : create_tables() + migrate_database() cost ~48 statements (~45 s at the measured speed),
-            so they run only when the hash of their source code differs from the one stored in the
-            database (table _neki_meta). Changing either function automatically re-runs them."""
+    """Ensure Neki's schema exists before the app starts."""
+
     if backend() != "turso":
         create_tables()
         migrate_database()
         return "ran (sqlite)"
+
+    # Check the actual database tables, not only the saved schema hash.
+    required_tables = {
+        "users",
+        "user_sessions",
+        "help_requests",
+        "notifications",
+        "user_skills",
+    }
+
+    conn = get_connection()
     try:
-        src = inspect.getsource(create_tables) + inspect.getsource(migrate_database)
-        schema_hash = hashlib.sha256(src.encode("utf-8")).hexdigest()[:16]
-    except Exception:
-        schema_hash = None
-    if schema_hash:
-        try:
-            conn = get_connection()
-            try:
-                row = conn.execute("SELECT value FROM _neki_meta WHERE key = ?", ("schema_hash",)).fetchone()
-            finally:
-                conn.close()
-            if row and row[0] == schema_hash:
-                return "skipped (schema hash matches)"
-        except Exception:
-            pass                                    # table missing -> fall through and build the schema
-    create_tables()
-    migrate_database()
-    if schema_hash:
-        conn = get_connection()
-        try:
-            conn.execute("CREATE TABLE IF NOT EXISTS _neki_meta (key TEXT PRIMARY KEY, value TEXT)")
-            conn.execute("DELETE FROM _neki_meta WHERE key = ?", ("schema_hash",))
-            conn.execute("INSERT INTO _neki_meta (key, value) VALUES (?, ?)", ("schema_hash", schema_hash))
-            conn.commit()
-        finally:
-            conn.close()
-    return "ran (turso)"
+        rows = conn.execute("""
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+        """).fetchall()
+        existing_tables = {row[0] for row in rows}
+    finally:
+        conn.close()
+
+    # Missing tables? Re-create the schema safely.
+    # CREATE TABLE IF NOT EXISTS preserves existing data.
+    if not required_tables.issubset(existing_tables):
+        create_tables()
+        migrate_database()
+    else:
+        # Existing schema: apply the app's normal migrations.
+        migrate_database()
+
+    # Verify that startup really produced the required tables.
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+        """).fetchall()
+        existing_tables = {row[0] for row in rows}
+    finally:
+        conn.close()
+
+    missing = required_tables - existing_tables
+    if missing:
+        raise RuntimeError(
+            "Neki database initialization failed. Missing tables: "
+            + ", ".join(sorted(missing))
+        )
+
+    return "schema verified (turso)"
+
 
 
 def render_timing_panel():
