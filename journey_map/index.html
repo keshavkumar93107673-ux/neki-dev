@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+
+        #journey-map {
+            width: 100%;
+            height: 460px;
+            background: #f3f6f4;
+        }
+
+        .leaflet-container {
+            font-family: Arial, sans-serif;
+        }
+
+        #journey-map {
+            position: relative;
+            overflow: hidden;
+            border-radius: 12px;
+            border: 1px solid rgba(128, 128, 128, 0.25);
+        }
+
+        #map-legend {
+            position: absolute;
+            left: 14px;
+            bottom: 28px;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.96);
+            color: #25312b;
+            padding: 12px 14px;
+            border-radius: 10px;
+            box-shadow: 0 3px 14px rgba(0, 0, 0, 0.18);
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        .legend-title {
+            font-size: 13px;
+            font-weight: 700;
+            margin-bottom: 7px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 5px;
+        }
+
+        .legend-dot {
+            display: inline-block;
+            width: 11px;
+            height: 11px;
+            border: 2px solid white;
+            border-radius: 50%;
+            box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15);
+            flex-shrink: 0;
+        }
+
+        .helper-dot {
+            background: #2583e9;
+        }
+
+        .destination-dot {
+            background: #19b968;
+        }
+
+        .legend-line {
+            width: 15px;
+            height: 4px;
+            border-radius: 4px;
+            background: #19b968;
+            flex-shrink: 0;
+        }
+
+        @media (max-width: 600px) {
+            #map-legend {
+                left: 8px;
+                bottom: 24px;
+                padding: 9px 10px;
+                font-size: 11px;
+            }
+        }
+
+        #journey-map {
+            margin-top: 0;
+            position: relative;
+            width: 100%;
+            height: 460px;
+            overflow: hidden;
+            border-radius: 14px;
+            border: 1px solid rgba(128, 128, 128, 0.25);
+            background: #f3f6f4;
+        }
+
+        .leaflet-container {
+            width: 100%;
+            height: 100%;
+            border-radius: inherit;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="journey-map">
+        <div id="map-legend">
+            <div class="legend-title">Journey map</div>
+            <div class="legend-item">
+                <span class="legend-dot helper-dot"></span>
+                Helper — live location
+            </div>
+            <div class="legend-item">
+                <span class="legend-dot destination-dot"></span>
+                Requester — help location
+            </div>
+            <div class="legend-item">
+                <span class="legend-line"></span>
+                Driving route
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+        let map = null;
+        let helperMarker = null;
+        let destinationMarker = null;
+        let routeLine = null;
+        let initialRouteFitted = false;
+        let lastRequestId = null;
+
+        function sendMessage(type, data = {}) {
+            window.parent.postMessage({
+                isStreamlitMessage: true,
+                type: type,
+                ...data
+            }, "*");
+        }
+
+        function initializeMap(args) {
+            const center = args.center || [20.5937, 78.9629];
+
+            map = L.map("journey-map", {
+                zoomControl: true,
+                scrollWheelZoom: true
+            }).setView(center, args.zoom || 13);
+
+            L.tileLayer(
+                "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                {
+                    maxZoom: 19,
+                    attribution: "&copy; OpenStreetMap contributors"
+                }
+            ).addTo(map);
+
+            map.whenReady(() => {
+                sendMessage("streamlit:setFrameHeight", {
+                    height: 460
+                });
+            });
+        }
+
+        function updateMap(args) {
+            if (!map) {
+                initializeMap(args);
+            }
+
+            const requestId = args.request_id;
+
+            if (lastRequestId !== requestId) {
+                initialRouteFitted = false;
+                lastRequestId = requestId;
+            }
+
+            if (args.destination) {
+                const destinationIcon = L.divIcon({
+                    className: "",
+                    html: '<div style="background:#19B968;width:18px;height:18px;border:3px solid white;border-radius:50%;box-shadow:0 2px 6px #555;"></div>',
+                    iconSize: [24, 24],
+                    iconAnchor: [12, 12]
+                });
+
+                if (!destinationMarker) {
+                    destinationMarker = L.marker(args.destination, {
+                        icon: destinationIcon
+                    }).addTo(map).bindTooltip("📍 Requester — Help location", {
+                        direction: "top",
+                        offset: [0, -8]
+                    })
+                        .bindPopup("Requester — Help request location");
+                } else {
+                    destinationMarker.setLatLng(args.destination);
+                    destinationMarker.setIcon(destinationIcon);
+                }
+            }
+
+            if (args.helper) {
+                const helperIcon = L.divIcon({
+                    className: "",
+                    html: '<div style="background:#2583E9;width:18px;height:18px;border:3px solid white;border-radius:50%;box-shadow:0 2px 6px #555;"></div>',
+                    iconSize: [24, 24],
+                    iconAnchor: [12, 12]
+                });
+
+                if (!helperMarker) {
+                    helperMarker = L.marker(args.helper, {
+                        icon: helperIcon
+                    }).addTo(map).bindTooltip("🚶 Helper — Live location", {
+                        direction: "top",
+                        offset: [0, -8]
+                    })
+                        .bindPopup("Helper — Live location");
+                } else {
+                    helperMarker.setLatLng(args.helper);
+                    helperMarker.setIcon(helperIcon);
+                }
+            } else if (helperMarker) {
+                map.removeLayer(helperMarker);
+                helperMarker = null;
+            }
+
+            if (args.route && args.route.length > 1) {
+                if (!routeLine) {
+                    routeLine = L.polyline(args.route, {
+                        color: "#19B968",
+                        weight: 6,
+                        opacity: 0.9
+                    }).addTo(map);
+                } else {
+                    routeLine.setLatLngs(args.route);
+                }
+
+                if (!initialRouteFitted) {
+                    map.fitBounds(routeLine.getBounds(), {
+                        padding: [25, 25],
+                        maxZoom: 15
+                    });
+                    initialRouteFitted = true;
+                }
+            } else if (routeLine) {
+                map.removeLayer(routeLine);
+                routeLine = null;
+            }
+
+            // Invalidate layout without resetting the user's zoom.
+            requestAnimationFrame(() => map.invalidateSize());
+        }
+
+        window.addEventListener("message", (event) => {
+            const message = event.data;
+
+            if (!message || message.type !== "streamlit:render") {
+                return;
+            }
+
+            updateMap(message.args || {});
+        });
+
+        sendMessage("streamlit:componentReady", {
+            apiVersion: 1
+        });
+
+        sendMessage("streamlit:setFrameHeight", {
+            height: 460
+        });
+    </script>
+</body>
+
+</html>

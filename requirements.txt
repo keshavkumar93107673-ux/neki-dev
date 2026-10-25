@@ -1,0 +1,9 @@
+streamlit
+bcrypt
+folium
+requests
+streamlit-folium
+streamlit-browser-session-storage==0.0.12
+extra-streamlit-components
+twilio
+turso_serverless

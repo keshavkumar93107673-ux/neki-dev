@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            overflow: hidden;
+        }
+    </style>
+</head>
+
+<body>
+    <script>
+        (() => {
+            let watchId = null;
+            let active = false;
+            let lastSentAt = 0;
+            let lastPosition = null;
+            let lastError = "";
+
+            function send(type, payload = {}) {
+                window.parent.postMessage({
+                    isStreamlitMessage: true,
+                    type,
+                    ...payload
+                }, "*");
+            }
+
+            function reportError(error) {
+                const message = error.message ||
+                    "Unable to access location";
+
+                if (message === lastError) return;
+                lastError = message;
+
+                send("streamlit:setComponentValue", {
+                    value: {
+                        error: message,
+                        sent_at: Date.now()
+                    }
+                });
+            }
+
+            function startTracking() {
+                if (watchId !== null || !active) return;
+
+                if (!navigator.geolocation) {
+                    reportError({
+                        message: "This browser does not support GPS location."
+                    });
+                    return;
+                }
+
+                watchId = navigator.geolocation.watchPosition(
+                    position => {
+                        if (!active) return;
+
+                        lastError = "";
+
+                        const now = Date.now();
+                        const latitude = position.coords.latitude;
+                        const longitude = position.coords.longitude;
+
+                        if (lastPosition !== null) {
+                            const distance = Math.hypot(
+                                latitude - lastPosition.latitude,
+                                longitude - lastPosition.longitude
+                            );
+
+                            if (
+                                now - lastSentAt < 15000 &&
+                                distance < 0.0002
+                            ) {
+                                return;
+                            }
+                        }
+
+                        lastSentAt = now;
+                        lastPosition = { latitude, longitude };
+
+                        send("streamlit:setComponentValue", {
+                            value: {
+                                latitude,
+                                longitude,
+                                accuracy: position.coords.accuracy,
+                                sent_at: now
+                            }
+                        });
+                    },
+                    error => {
+                        const messages = {
+                            1: "Location permission denied. Allow Location for localhost in your browser settings.",
+                            2: "Your device could not determine its location. Check device location services.",
+                            3: "Location request timed out. Keep the journey open and try again."
+                        };
+
+                        reportError({
+                            message: messages[error.code] ||
+                                "Unable to access your location."
+                        });
+                    },
+                    {
+                        enableHighAccuracy: true,
+                        maximumAge: 5000,
+                        timeout: 20000
+                    }
+                );
+            }
+
+            function stopTracking() {
+                active = false;
+
+                if (watchId !== null) {
+                    navigator.geolocation.clearWatch(watchId);
+                    watchId = null;
+                }
+            }
+
+            window.addEventListener("message", event => {
+                const data = event.data;
+
+                if (!data || data.type !== "streamlit:render") return;
+
+                active = Boolean(data.args && data.args.active);
+
+                if (active) {
+                    startTracking();
+                } else {
+                    stopTracking();
+                }
+            });
+
+            send("streamlit:componentReady", { apiVersion: 1 });
+            send("streamlit:setFrameHeight", { height: 0 });
+        })();
+    </script>
+</body>
+
+</html>
