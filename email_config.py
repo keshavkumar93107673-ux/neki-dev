@@ -34,6 +34,7 @@ SMTP_PASSWORD = (
     _get_setting("SMTP_PASSWORD")
     or _get_setting("BREVO_SMTP_KEY")
 )
+st.write("SMTP credential loaded:", bool(SMTP_PASSWORD))
 
 # Use the deployed URL by default; override locally if needed.
 BASE_URL = (
