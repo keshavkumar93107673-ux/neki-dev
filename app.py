@@ -1224,23 +1224,7 @@ def global_live_refresh():
         unread_rating_count
     )
 
-    # -----------------------------------------------------
-    # GLOBAL FULL-APP REFRESH
-    # -----------------------------------------------------
-
-    if st.session_state.page in AUTO_REFRESH_PAGES:
-
-        if (
-            current_time
-            - st.session_state.global_refresh_last_run
-            >= 10
-        ):
-
-            st.session_state.global_refresh_last_run = (
-                current_time
-            )
-
-            st.rerun()
+    
 
 
 global_live_refresh()
