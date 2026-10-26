@@ -1765,6 +1765,11 @@ elif st.session_state.page == "Login":
             (() => {
                 const parent = window.parent;
 
+                // After this long, tell the user the sign-in is slow.
+                // The lock is NOT released: the server may still be
+                // finishing the first login.
+                const SLOW_NOTICE_MS = 30000;
+
                 function showLoginLoading(button) {
                     if (
                         !button ||
@@ -1775,6 +1780,53 @@ elif st.session_state.page == "Login":
 
                     button.dataset.nekiLoginLoading = "1";
                     button.disabled = true;
+                    
+                    // Lock ONLY the other controls of the remembered-accounts
+                    // panel (the other account buttons and "Login with
+                    // another account") so a second click cannot interfere
+                    // with the login that is already in progress.
+                    const others = Array.from(
+                        parent.document.querySelectorAll(
+                            '.st-key-remembered_accounts_panel ' +
+                            '[class*="st-key-remembered_account_"] button, ' +
+                            '.st-key-remembered_accounts_panel ' +
+                            '.st-key-login_another_account button'
+                        )
+                    ).filter((b) => b !== button && !b.disabled);
+
+                    others.forEach((b) => { b.disabled = true; });
+
+                    let watch = null;
+                    let timer = null;
+
+                    function unlock() {
+                        clearInterval(watch);
+                        clearTimeout(timer);
+                        others.forEach((b) => { b.disabled = false; });
+                    }
+
+                    // The server answered by redrawing the page without the
+                    // clicked account (login finished, or its expired
+                    // session was removed): release the other controls.
+                    watch = setInterval(() => {
+                        if (!parent.document.contains(button)) {
+                            unlock();
+                        }
+                    }, 500);
+
+                    // Still no answer: keep everything locked (a second
+                    // attempt could compete with the first one) and tell
+                    // the user what to do. Refreshing the page starts a
+                    // new Streamlit session, which the old attempt cannot
+                    // change.
+                    timer = setTimeout(() => {
+                        if (parent.document.contains(button)) {
+                            button.innerHTML = button.innerHTML.replace(
+                                "Signing you in...",
+                                "Still working... refresh the page if this does not finish"
+                            );
+                        }
+                    }, SLOW_NOTICE_MS);
 
                     button.innerHTML =
                         '<span style="display:inline-flex;align-items:center;gap:9px;">' +
@@ -1909,6 +1961,12 @@ elif st.session_state.page == "Login":
 
                     st.session_state.persistent_login_checked = True
                     st.session_state.browser_storage_checked = True
+                    
+                    # Same finish as the normal login form: give the browser
+                    # a moment to write this tab's session token, then
+                    # redraw the app as logged in.
+                    time.sleep(1.5)
+                    st.rerun()
 
                 else:
 
