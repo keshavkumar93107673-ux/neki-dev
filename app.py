@@ -1102,7 +1102,7 @@ def _set_page(page):
         st.session_state["request_map_longitude"] = 78.9629
         st.session_state["request_map_zoom"] = 5
 
-        st.session_state.page = page
+    st.session_state.page = page
 
 
 def go_to(page):
