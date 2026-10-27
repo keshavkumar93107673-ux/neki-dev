@@ -1938,9 +1938,11 @@ def get_dashboard_stats(user_id):
 
 def get_live_counts(user_id):
     """
-    Both sidebar/live-refresh unread counts in ONE statement.
+    Both sidebar/live-refresh unread counts, plus the id of the user's
+    newest notification, in ONE statement.
     Same conditions as get_unread_notification_count() and
-    get_unread_rating_count().
+    get_unread_rating_count(). The newest id lets the live refresh notice
+    a new notification even when the unread counts happen to be equal.
     """
 
     connection = get_connection()
@@ -1955,8 +1957,10 @@ def get_live_counts(user_id):
             (SELECT COUNT(*) FROM notifications
               WHERE user_id = ?
                 AND type = 'rating_received'
-                AND rating_is_read = 0) AS unread_ratings
-    """, (user_id, user_id))
+                AND rating_is_read = 0) AS unread_ratings,
+            (SELECT COALESCE(MAX(id), 0) FROM notifications
+              WHERE user_id = ?) AS latest_notification_id
+    """, (user_id, user_id, user_id))
 
     result = cursor.fetchone()
 
@@ -1965,6 +1969,7 @@ def get_live_counts(user_id):
     return (
         result["unread_notifications"] or 0,
         result["unread_ratings"] or 0,
+        result["latest_notification_id"] or 0,
     )
 
 
