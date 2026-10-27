@@ -1902,56 +1902,25 @@ def get_dashboard_stats(user_id):
     connection = get_connection()
     cursor = connection.cursor()
 
-    # -----------------------------------------------------
-    # MY REQUESTS
-    # -----------------------------------------------------
-
+    # One statement instead of three (same three conditions as before).
     cursor.execute("""
-        SELECT COUNT(*) AS count
-        FROM help_requests
-        WHERE user_id = ?
-    """, (user_id,))
+        SELECT
+            (SELECT COUNT(*) FROM help_requests
+              WHERE user_id = ?) AS my_requests,
+            (SELECT COUNT(*) FROM help_requests
+              WHERE helper_id = ?
+                AND is_removed = 0) AS help_given,
+            (SELECT COUNT(*) FROM help_requests
+              WHERE status = 'Completed'
+                AND is_removed = 0
+                AND (user_id = ? OR helper_id = ?)) AS completed
+    """, (user_id, user_id, user_id, user_id))
 
-    my_requests = cursor.fetchone()["count"] or 0
+    row = cursor.fetchone()
 
-    # -----------------------------------------------------
-    # HELP GIVEN
-    # -----------------------------------------------------
-
-    cursor.execute("""
-        SELECT COUNT(*) AS count
-        FROM help_requests
-        WHERE helper_id = ?
-            AND is_removed = 0
-    """, (user_id,))
-
-    help_given = cursor.fetchone()["count"] or 0
-
-    # -----------------------------------------------------
-    # COMPLETED
-    #
-    # Count requests completed by this user either as:
-    # - requester
-    # - helper
-    #
-    # DISTINCT prevents double-counting a request.
-    # -----------------------------------------------------
-
-    cursor.execute("""
-        SELECT COUNT(*) AS count
-        FROM help_requests
-        WHERE status = 'Completed'
-        AND is_removed = 0
-        AND (
-            user_id = ?
-            OR helper_id = ?
-        )
-    """, (
-        user_id,
-        user_id
-    ))
-
-    completed = cursor.fetchone()["count"] or 0
+    my_requests = row["my_requests"] or 0
+    help_given = row["help_given"] or 0
+    completed = row["completed"] or 0
 
     connection.close()
 
@@ -1962,6 +1931,98 @@ def get_dashboard_stats(user_id):
     }
 
 
+
+# =========================================================
+# PERFORMANCE HELPERS (one statement instead of several)
+# =========================================================
+
+def get_live_counts(user_id):
+    """
+    Both sidebar/live-refresh unread counts in ONE statement.
+    Same conditions as get_unread_notification_count() and
+    get_unread_rating_count().
+    """
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            (SELECT COUNT(*) FROM notifications
+              WHERE user_id = ?
+                AND is_read = 0
+                AND type != 'rating_received') AS unread_notifications,
+            (SELECT COUNT(*) FROM notifications
+              WHERE user_id = ?
+                AND type = 'rating_received'
+                AND rating_is_read = 0) AS unread_ratings
+    """, (user_id, user_id))
+
+    result = cursor.fetchone()
+
+    connection.close()
+
+    return (
+        result["unread_notifications"] or 0,
+        result["unread_ratings"] or 0,
+    )
+
+
+def get_helper_offer_summary(helper_id):
+    """
+    Everything the 'new helper offer' card needs in ONE statement:
+    trust score, location, average rating, rating count and
+    people-helped count (same conditions as get_user_by_id(),
+    get_user_rating_stats() and get_people_helped_count()).
+    """
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            (SELECT trust_score FROM users WHERE id = ?) AS trust_score,
+            (SELECT location FROM users WHERE id = ?) AS location,
+            (SELECT COUNT(*) FROM users WHERE id = ?) AS user_exists,
+            (SELECT AVG(rating) FROM ratings WHERE receiver_id = ?) AS average_rating,
+            (SELECT COUNT(*) FROM ratings WHERE receiver_id = ?) AS total_ratings,
+            (SELECT COUNT(*) FROM help_requests
+              WHERE helper_id = ?
+                AND status = 'Completed'
+                AND is_removed = 0) AS people_helped
+    """, (helper_id,) * 6)
+
+    r = cursor.fetchone()
+
+    connection.close()
+
+    return {
+        "user_exists": bool(r["user_exists"]),
+        "trust_score": r["trust_score"],
+        "location": r["location"],
+        "average_rating": round(r["average_rating"] or 0, 1),
+        "total_ratings": r["total_ratings"] or 0,
+        "people_helped": r["people_helped"] or 0,
+    }
+
+
+def get_rated_request_ids(giver_id):
+    """Ids of every request this user has already rated (ONE statement)."""
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT request_id
+        FROM ratings
+        WHERE giver_id = ?
+    """, (giver_id,))
+
+    ids = {row["request_id"] for row in cursor.fetchall()}
+
+    connection.close()
+
+    return ids
 
     
 # =========================================================
