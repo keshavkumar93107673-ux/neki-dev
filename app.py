@@ -40,6 +40,9 @@ from database import (
     confirm_help_completed,
     submit_rating,
     has_user_rated,
+    get_live_counts,
+    get_helper_offer_summary,
+    get_rated_request_ids,
     get_user_rating_stats,
     get_received_reviews,
     search_help_requests,
@@ -1084,7 +1087,9 @@ def format_request_age(created_at):
 
     return created.strftime("%d %b %Y")
 
-def go_to(page):
+def _set_page(page):
+    """Switches page state only (no rerun). Used directly as a button
+    on_click callback, so a sidebar click costs ONE script run."""
 
     if page == "Request Help" and st.session_state.page != "Request Help":
 
@@ -1097,7 +1102,12 @@ def go_to(page):
         st.session_state["request_map_longitude"] = 78.9629
         st.session_state["request_map_zoom"] = 5
 
-    st.session_state.page = page
+        st.session_state.page = page
+
+
+def go_to(page):
+
+    _set_page(page)
 
     st.rerun()
 
@@ -1152,6 +1162,21 @@ def global_live_refresh():
 
     current_time = time.time()
 
+    # Skip if this user's counts were read within the last 4 s (the
+    # click run and the page run of one interaction used to read twice).
+    # Actions that change read-state reset this (see _force_live_check()).
+    _last = st.session_state.get("_live_checked")
+    if (
+        _last
+        and _last[0] == st.session_state.user_id
+        and current_time - _last[1] < 4
+    ):
+        return
+    st.session_state["_live_checked"] = (
+        st.session_state.user_id,
+        current_time,
+    )
+
     # -----------------------------------------------------
     # NOTIFICATION COUNTS
     # -----------------------------------------------------
@@ -1164,14 +1189,8 @@ def global_live_refresh():
         st.session_state.rating_unread_count
     )
 
-    unread_notification_count = (
-        get_unread_notification_count(
-            st.session_state.user_id
-        )
-    )
-
-    unread_rating_count = (
-        get_unread_rating_count(
+    unread_notification_count, unread_rating_count = (
+        get_live_counts(
             st.session_state.user_id
         )
     )
@@ -1225,6 +1244,12 @@ def global_live_refresh():
     )
 
     
+
+
+def _force_live_check():
+    """Call right after anything that changes unread state so the next
+    run re-reads the counts instead of waiting for the 4 s window."""
+    st.session_state["_live_checked"] = None
 
 
 global_live_refresh()
@@ -1485,13 +1510,14 @@ with st.sidebar:
         )
 
         for label, page in sidebar_items:
-            if st.button(
+            st.button(
                 label,
                 key=f"side_{page}",
                 use_container_width=True,
                 type="primary" if st.session_state.page == page else "secondary",
-            ):
-                go_to(page)
+                on_click=_set_page,
+                args=(page,),
+            )
 
         st.markdown(
             '<div class="sidebar-section">Account</div>',
@@ -4115,6 +4141,8 @@ elif st.session_state.page == "My Requests":
             st.session_state.user_id
         )
 
+        rated_request_ids = None
+
         if not requests:
 
             st.info(
@@ -4320,29 +4348,22 @@ elif st.session_state.page == "My Requests":
 
                             helper_id = request["helper_id"]
 
-                            helper_user = get_user_by_id(
-                                helper_id
-                            )
+                            # ONE statement instead of three.
+                            _offer = get_helper_offer_summary(helper_id)
 
-                            average_rating, total_ratings = (
-                                get_user_rating_stats(
-                                    helper_id
-                                )
-                            )
-
-                            people_helped = get_people_helped_count(
-                                helper_id
-                            )
+                            average_rating = _offer["average_rating"]
+                            total_ratings = _offer["total_ratings"]
+                            people_helped = _offer["people_helped"]
 
                             helper_trust_score = (
-                                helper_user["trust_score"]
-                                if helper_user
+                                _offer["trust_score"]
+                                if _offer["user_exists"]
                                 else 50
                             )
 
                             helper_location = (
-                                helper_user["location"]
-                                if helper_user
+                                _offer["location"]
+                                if _offer["user_exists"]
                                 else "Not available"
                             )
 
@@ -4645,10 +4666,12 @@ elif st.session_state.page == "My Requests":
 
                         st.markdown("")
 
-                        already_rated = has_user_rated(
-                            request["id"],
-                            st.session_state.user_id,
-                        )
+                        if rated_request_ids is None:
+                            rated_request_ids = get_rated_request_ids(
+                                st.session_state.user_id
+                            )
+
+                        already_rated = request["id"] in rated_request_ids
 
                         if already_rated:
 
@@ -5876,6 +5899,8 @@ elif st.session_state.page == "Notifications":
                     user_id
                 )
 
+                _force_live_check()
+
                 st.rerun()
 
     st.markdown("")
@@ -6072,6 +6097,8 @@ elif st.session_state.page == "Notifications":
                         notification_id,
                         user_id
                     )
+
+                    _force_live_check()
 
                     st.rerun()
 
