@@ -1153,6 +1153,15 @@ AUTO_REFRESH_PAGES = {
     "Request Status",
 }
 
+# Pages whose data can change WITHOUT creating a notification (chat
+# messages, journey/GPS updates, new open requests). They also refresh on
+# a timer, in seconds. Everything else refreshes only when a new
+# notification arrives, so an idle page is never re-run for nothing.
+LIVE_TIMED_REFRESH_SECONDS = {
+    "Request Status": 15,
+    "Find Help": 30,
+}
+
 
 @st.fragment(run_every="5s")
 def global_live_refresh():
@@ -1189,7 +1198,11 @@ def global_live_refresh():
         st.session_state.rating_unread_count
     )
 
-    unread_notification_count, unread_rating_count = (
+    (
+        unread_notification_count,
+        unread_rating_count,
+        latest_notification_id,
+    ) = (
         get_live_counts(
             st.session_state.user_id
         )
@@ -1243,7 +1256,60 @@ def global_live_refresh():
         unread_rating_count
     )
 
-    
+    # -----------------------------------------------------
+    # AUTOMATIC SCREEN REFRESH (restores the original live
+    # behaviour without re-running the page for nothing)
+    # -----------------------------------------------------
+    # The counts above are only numbers in session state; nothing on
+    # screen changes until the whole script runs again. Run it again
+    # when something relevant changed, instead of every 10 s.
+
+    _prev_latest = st.session_state.get("_live_latest_notification")
+
+    previous_latest_id = (
+        _prev_latest[1]
+        if _prev_latest and _prev_latest[0] == st.session_state.user_id
+        else None
+    )
+
+    st.session_state["_live_latest_notification"] = (
+        st.session_state.user_id,
+        latest_notification_id,
+    )
+
+    something_new = (
+        previous_latest_id is not None
+        and (
+            latest_notification_id != previous_latest_id
+            or unread_notification_count != previous_notification_count
+            or unread_rating_count != previous_rating_count
+        )
+    )
+
+    page_now = st.session_state.page
+
+    # Only the 5 s timer may trigger the rerun. A run caused by the
+    # user's own click already draws fresh data, and a rerun there could
+    # swallow the click (e.g. "Confirm Help Completed").
+    if (
+        page_now in AUTO_REFRESH_PAGES
+        and not st.session_state.get("_live_in_full_run", False)
+    ):
+
+        timed_seconds = LIVE_TIMED_REFRESH_SECONDS.get(page_now)
+
+        timer_due = (
+            timed_seconds is not None
+            and current_time
+            - st.session_state.global_refresh_last_run
+            >= timed_seconds
+        )
+
+        if something_new or timer_due:
+
+            st.session_state.global_refresh_last_run = current_time
+
+            st.rerun()
 
 
 def _force_live_check():
@@ -1252,7 +1318,11 @@ def _force_live_check():
     st.session_state["_live_checked"] = None
 
 
-global_live_refresh()
+st.session_state["_live_in_full_run"] = True
+try:
+    global_live_refresh()
+finally:
+    st.session_state["_live_in_full_run"] = False
 
 
 
