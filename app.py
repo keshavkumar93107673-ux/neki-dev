@@ -5,7 +5,7 @@ from folium.plugins import LocateControl
 import requests
 import time
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from streamlit_session_browser_storage import SessionStorage
 import streamlit.components.v1 as components
 import extra_streamlit_components as stx
@@ -24,6 +24,12 @@ from database import (
     get_user_by_id,
     get_user_by_email,
     create_help_request,
+    compute_request_expiry,
+    format_request_expiry,
+    get_app_today,
+    EXPIRY_OPTIONS,
+    EXPIRY_CUSTOM_OPTION,
+    DEFAULT_EXPIRY_OPTION,
     get_user_requests,
     remove_own_request,
     get_open_requests,
@@ -3507,6 +3513,81 @@ elif st.session_state.page == "Request Help":
             "Only needed for paid requests."
         )
 
+        # -------------------------------------------------
+        # EXPIRY
+        # -------------------------------------------------
+
+        st.markdown(
+            """<div class="request-section-heading request-expiry-heading">
+        <div class="request-section-kicker">04 · EXPIRY</div>
+        <div class="request-section-title">How long should this request stay open?</div>
+        <div class="request-section-text">Pending requests close automatically after this time. Requests that a helper has already accepted are never closed automatically.</div>
+        </div>""",
+            unsafe_allow_html=True,
+        )
+
+        expiry_option = st.radio(
+            "Expiry",
+            EXPIRY_OPTIONS,
+            index=EXPIRY_OPTIONS.index(DEFAULT_EXPIRY_OPTION),
+            horizontal=True,
+            key="request_expiry_option",
+        )
+
+        expiry_custom_date = None
+
+        if expiry_option == EXPIRY_CUSTOM_OPTION:
+
+            expiry_today = get_app_today()
+
+            # A page left open past midnight must not keep a date
+            # that is now in the past.
+            previous_expiry_date = st.session_state.get(
+                "request_expiry_custom_date"
+            )
+
+            if (
+                isinstance(previous_expiry_date, date)
+                and previous_expiry_date < expiry_today
+            ):
+                st.session_state["request_expiry_custom_date"] = expiry_today
+
+            expiry_custom_date = st.date_input(
+                "Expiry date",
+                value=expiry_today + timedelta(days=7),
+                min_value=expiry_today,
+                key="request_expiry_custom_date",
+            )
+
+        try:
+            expires_at_value = compute_request_expiry(
+                expiry_option,
+                expiry_custom_date,
+            )
+            expiry_error = None
+        except ValueError as expiry_problem:
+            expires_at_value = None
+            expiry_error = str(expiry_problem)
+
+        if expiry_error:
+
+            st.error(expiry_error)
+
+        elif expiry_option == EXPIRY_CUSTOM_OPTION:
+
+            st.caption(
+                "Your request will stay open until the end of "
+                f"{expiry_custom_date.strftime('%d %b %Y')} "
+                f"({format_request_expiry(expires_at_value).split(', ', 1)[1]})."
+            )
+
+        else:
+
+            st.caption(
+                "Your request will stay open until about "
+                f"{format_request_expiry(expires_at_value)}."
+            )
+
         st.markdown(
             """
             <div class="request-submit-divider"></div>
@@ -3546,6 +3627,12 @@ elif st.session_state.page == "Request Help":
                         "Please select an approximate help location on the map."
                     )
 
+                elif expires_at_value is None:
+                    st.error(
+                        expiry_error
+                        or "Please choose how long the request should stay open."
+                    )
+
                 else:
                     request_location = (
                         location.strip()
@@ -3559,24 +3646,28 @@ elif st.session_state.page == "Request Help":
                     if not request_location:
                         request_location = "Approximate location"
 
-                    request_id = create_help_request(
-                        user_id=st.session_state.user_id,
-                        title=title,
-                        description=description,
-                        category=category,
-                        location=request_location,
-                        budget_type=budget_type,
-                        budget_amount=budget_amount,
-                        latitude=st.session_state.get("request_latitude"),
-                        longitude=st.session_state.get("request_longitude"),
-                    )
+                    try:
+                        request_id = create_help_request(
+                            user_id=st.session_state.user_id,
+                            title=title,
+                            description=description,
+                            category=category,
+                            location=request_location,
+                            budget_type=budget_type,
+                            budget_amount=budget_amount,
+                            latitude=st.session_state.get("request_latitude"),
+                            longitude=st.session_state.get("request_longitude"),
+                            expires_at=expires_at_value,
+                        )
+                    except ValueError as expiry_problem:
+                        st.error(str(expiry_problem))
+                    else:
+                        st.session_state.my_requests_tab = "Requests I Created"
+                        st.session_state.scroll_to_top = True
+                        st.session_state.request_posted_notice = True
+                        st.session_state.new_request_id = request_id
 
-                    st.session_state.my_requests_tab = "Requests I Created"
-                    st.session_state.scroll_to_top = True
-                    st.session_state.request_posted_notice = True
-                    st.session_state.new_request_id = request_id
-
-                    go_to("My Requests")
+                        go_to("My Requests")
 
 
 # =========================================================
@@ -4288,6 +4379,9 @@ elif st.session_state.page == "My Requests":
                     elif status == "Pending":
                         status_label = "Pending"
                         status_class = "pending"
+                    elif status == "Expired":
+                        status_label = "Expired"
+                        status_class = "default"
                     elif status == "Awaiting Requester Approval":
                         status_label = "Review Helper Offer"
                         status_class = "review"
@@ -4344,6 +4438,26 @@ elif st.session_state.page == "My Requests":
                             else "Not specified"
                         )
 
+                        # Pending requests show when they close; Expired
+                        # ones show when they closed. NULL expiry (older
+                        # requests) shows nothing.
+                        expiry_text = (
+                            format_request_expiry(request["expires_at"])
+                            if status in ("Pending", "Expired")
+                            and not is_removed
+                            else None
+                        )
+
+                        expiry_panel_html = (
+                            f'<div class="request-side-divider"></div>'
+                            f'<div class="request-side-label">'
+                            f'{"EXPIRED" if status == "Expired" else "EXPIRES"}'
+                            f'</div>'
+                            f'<div class="request-side-value">{expiry_text}</div>'
+                            if expiry_text
+                            else ""
+                        )
+
                         side_panel_html = (
                             f'<div class="request-side-panel">'
                             f'<div class="request-side-label">STATUS</div>'
@@ -4354,6 +4468,7 @@ elif st.session_state.page == "My Requests":
                             f'<div class="request-side-divider"></div>'
                             f'<div class="request-side-label">BUDGET</div>'
                             f'<div class="request-side-value">{budget_display}</div>'
+                            f'{expiry_panel_html}'
                             f'</div>'
                         )
 
@@ -7103,6 +7218,7 @@ elif st.session_state.page == "Admin":
                         "All",
                         "Removed",
                         "Pending",          
+                        "Expired",
                         "Accepted",
                         "Help Provided",
                         "Completed",
