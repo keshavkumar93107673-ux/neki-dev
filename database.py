@@ -1238,7 +1238,7 @@ def get_user_requests(user_id):
     Also returns the helper's name when a helper has
     accepted the request.
     """
-
+    expire_overdue_requests(force=True)
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -1312,7 +1312,8 @@ def get_open_requests(user_id=None):
     If user_id is provided, that user's own requests
     are excluded.
     """
-
+    expire_overdue_requests()
+    now_text = _to_storage(_utc_now())
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -1327,6 +1328,10 @@ def get_open_requests(user_id=None):
                 ON help_requests.user_id = users.id
             WHERE help_requests.status = 'Pending'
                 AND help_requests.is_removed = 0
+                AND (
+                    help_requests.expires_at IS NULL
+                    OR help_requests.expires_at >= ?
+                )
                 AND help_requests.user_id != ?
 
                 AND NOT EXISTS (
@@ -1338,7 +1343,7 @@ def get_open_requests(user_id=None):
                 )
 
             ORDER BY help_requests.created_at DESC
-        """, (user_id, user_id))
+        """, (now_text, user_id, user_id))
 
     else:
 
@@ -1352,8 +1357,12 @@ def get_open_requests(user_id=None):
                 ON help_requests.user_id = users.id
             WHERE help_requests.status = 'Pending'
             AND help_requests.is_removed = 0
+            AND (
+                help_requests.expires_at IS NULL
+                OR help_requests.expires_at >= ?
+            )
             ORDER BY help_requests.created_at DESC
-        """)
+        """, (now_text,))
 
     requests = cursor.fetchall()
 
@@ -1373,7 +1382,8 @@ def get_recent_community_activity(limit=5):
     Includes requests in all workflow states so the Dashboard
     reflects actual community activity.
     """
-
+    expire_overdue_requests()
+    now_text = _to_storage(_utc_now())
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -1389,9 +1399,15 @@ def get_recent_community_activity(limit=5):
         JOIN users
             ON help_requests.user_id = users.id
         WHERE help_requests.is_removed = 0
+        AND help_requests.status != 'Expired'
+        AND NOT (
+            help_requests.status = 'Pending'
+            AND help_requests.expires_at IS NOT NULL
+            AND help_requests.expires_at < ?
+        )
         ORDER BY help_requests.created_at DESC
         LIMIT ?
-    """, (limit,))
+    """, (now_text, limit))
 
     activities = cursor.fetchall()
 
@@ -1404,6 +1420,8 @@ def get_recent_community_activity(limit=5):
 # =========================================================
 
 def search_help_requests(search_term, user_id=None):
+    expire_overdue_requests()
+    now_text = _to_storage(_utc_now())
 
     connection = get_connection()
     cursor = connection.cursor()
@@ -1419,9 +1437,13 @@ def search_help_requests(search_term, user_id=None):
             ON help_requests.user_id = users.id
         WHERE help_requests.status = 'Pending'
         AND help_requests.is_removed = 0
+        AND (
+            help_requests.expires_at IS NULL
+            OR help_requests.expires_at >= ?
+        )
     """
 
-    params = []
+    params = [now_text]
 
     if user_id is not None:
         query += """
@@ -1494,6 +1516,7 @@ def accept_help_request(request_id, helper_id):
         WHERE id = ?
         AND status = 'Pending'
         AND is_removed = 0
+        AND (expires_at IS NULL OR expires_at >= ?)
         AND user_id != ?
 
         AND NOT EXISTS (
@@ -1506,6 +1529,7 @@ def accept_help_request(request_id, helper_id):
     """, (
         helper_id,
         request_id,
+        _to_storage(_utc_now()),
         helper_id,
         helper_id
     ))
@@ -2876,7 +2900,17 @@ def migrate_database():
             ADD COLUMN longitude REAL
         """)
 
-    
+    # -----------------------------------------------------
+    # REQUEST EXPIRY
+    # -----------------------------------------------------
+    # NULL = never expires, so every existing request keeps
+    # behaving exactly as before.
+
+    if "expires_at" not in request_columns:
+        cursor.execute("""
+            ALTER TABLE help_requests
+            ADD COLUMN expires_at TEXT
+        """)
     # -----------------------------------------------------
     # JOURNEY TRACKING FIELDS
     # -----------------------------------------------------
@@ -3241,7 +3275,7 @@ def get_admin_requests():
     Admin receives only information needed to
     monitor and moderate the request workflow.
     """
-
+    expire_overdue_requests(force=True)
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -3260,7 +3294,8 @@ def get_admin_requests():
             help_requests.removed_at,
             help_requests.removed_by_admin,
             help_requests.budget_type,
-            help_requests.budget_amount
+            help_requests.budget_amount,
+            help_requests.expires_at
         FROM help_requests
         ORDER BY help_requests.created_at DESC
     """)
