@@ -12149,7 +12149,7 @@ button[data-testid="stBaseButton-primaryFormSubmit"] p {
     flex-wrap: wrap;
     align-items: center;
     gap: 10px;
-    padding: 4px 0 2px;
+    padding: 4px 0 22px;
 }
 
 .st-key-public_profile_skills .public-profile-skill-chip {
