@@ -3,7 +3,9 @@ import turso_compat
 import bcrypt
 import secrets
 import hashlib
-from datetime import datetime, timedelta
+import time as _time
+from datetime import date, datetime, timedelta, timezone
+from datetime import time as _dt_time
 
 
 # =========================================================
@@ -930,6 +932,220 @@ def update_user(user_id, name, location, phone=None):
 
 
 # =========================================================
+# REQUEST EXPIRY
+# =========================================================
+#
+# Storage convention (same as created_at / CURRENT_TIMESTAMP):
+#   expires_at is TEXT "YYYY-MM-DD HH:MM:SS" in UTC.
+#   NULL means "never expires" (all requests created before this
+#   feature keep their current behaviour).
+#
+# A request is overdue when  expires_at < now  (strictly), so a request
+# whose deadline is the last second of a day is still open during that
+# second and is never expired early.
+#
+# Only requests whose status is 'Pending' can expire.  Accepted,
+# In Progress, Help Provided, Completed and 'Awaiting Requester
+# Approval' requests are never touched.
+
+EXPIRY_STORAGE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+EXPIRY_PRESET_DAYS = {
+    "1 day": 1,
+    "3 days": 3,
+    "7 days": 7,
+    "14 days": 14,
+}
+EXPIRY_CUSTOM_OPTION = "Custom date"
+EXPIRY_OPTIONS = list(EXPIRY_PRESET_DAYS) + [EXPIRY_CUSTOM_OPTION]
+DEFAULT_EXPIRY_OPTION = "7 days"
+
+# At most one automatic sweep per process in this many seconds
+# (the time check inside the discovery queries keeps results exact
+# in between, so this only limits extra database round-trips).
+EXPIRY_SWEEP_MIN_INTERVAL_SECONDS = 30
+_last_expiry_sweep = None
+
+
+def _load_app_timezone():
+    """
+    Timezone used for "end of the selected date".
+
+    The app stores everything in UTC and has no timezone setting, so
+    this adds one optional setting (env NEKI_TIMEZONE or secrets
+    [app] timezone).  Default: Asia/Kolkata (India has no daylight
+    saving).  If the timezone database is unavailable, India falls
+    back to a fixed +05:30 offset and anything else falls back to UTC.
+    """
+
+    name = str(
+        turso_compat._setting(
+            "NEKI_TIMEZONE", "app", "timezone", "Asia/Kolkata"
+        )
+    ).strip() or "Asia/Kolkata"
+
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name), name
+    except Exception:
+        if name == "Asia/Kolkata":
+            return timezone(timedelta(hours=5, minutes=30), "IST"), name
+        return timezone.utc, "UTC"
+
+
+APP_TIMEZONE, APP_TIMEZONE_NAME = _load_app_timezone()
+
+
+def _utc_now():
+    """Current UTC time as a naive datetime (same convention as utcnow())."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _to_storage(utc_naive):
+    return utc_naive.strftime(EXPIRY_STORAGE_FORMAT)
+
+
+def _parse_storage(value):
+    """Stored "YYYY-MM-DD HH:MM:SS" -> naive UTC datetime, or None."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value), EXPIRY_STORAGE_FORMAT)
+    except ValueError:
+        return None
+
+
+def get_app_today(now=None):
+    """Today's date in the application timezone."""
+    now = now or _utc_now()
+    return now.replace(tzinfo=timezone.utc).astimezone(APP_TIMEZONE).date()
+
+
+def compute_request_expiry(option, custom_date=None, now=None):
+    """
+    Turns the Create Request choice into the value stored in expires_at.
+
+    option:
+        "1 day" / "3 days" / "7 days" / "14 days"
+            -> exactly that long after now.
+        "Custom date"
+            -> the END of custom_date (23:59:59) in the application
+               timezone.  Today is allowed, past dates are not.
+
+    Raises ValueError with a user-readable message for anything invalid.
+    """
+
+    now = now or _utc_now()
+
+    if option in EXPIRY_PRESET_DAYS:
+        return _to_storage(now + timedelta(days=EXPIRY_PRESET_DAYS[option]))
+
+    if option != EXPIRY_CUSTOM_OPTION:
+        raise ValueError("Please choose how long the request should stay open.")
+
+    if isinstance(custom_date, datetime):
+        custom_date = custom_date.date()
+
+    if not isinstance(custom_date, date):
+        raise ValueError("Please choose an expiry date.")
+
+    if custom_date < get_app_today(now):
+        raise ValueError("The expiry date cannot be in the past.")
+
+    try:
+        end_of_day = datetime.combine(
+            custom_date, _dt_time(23, 59, 59), tzinfo=APP_TIMEZONE
+        )
+        expires_utc = end_of_day.astimezone(timezone.utc).replace(tzinfo=None)
+    except (OverflowError, ValueError):
+        raise ValueError("Please choose a valid expiry date.")
+
+    if expires_utc < now:
+        raise ValueError("The expiry date cannot be in the past.")
+
+    return _to_storage(expires_utc)
+
+
+def format_request_expiry(expires_at):
+    """
+    Human-readable expiry in the application timezone, e.g.
+    "18 Nov 2026, 11:59 PM IST".  Returns None when there is no
+    (valid) expiry.
+    """
+
+    expires = _parse_storage(expires_at)
+
+    if expires is None:
+        return None
+
+    local = expires.replace(tzinfo=timezone.utc).astimezone(APP_TIMEZONE)
+
+    # Built by hand (no %-d / %-I) so it also works on Windows.
+    return (
+        f"{local.day} {local.strftime('%b %Y')}, "
+        f"{local.hour % 12 or 12}:{local.strftime('%M %p')} "
+        + (local.tzname() or APP_TIMEZONE_NAME)
+    )
+
+
+def expire_overdue_requests(now=None, force=False):
+    """
+    Marks overdue PENDING requests as 'Expired'.  Returns how many rows
+    changed.
+
+    - Only status = 'Pending' (and not removed) rows are updated, so
+      Accepted / In Progress / Help Provided / Completed /
+      Awaiting Requester Approval requests can never be touched.
+    - Rows with expires_at NULL are never touched.
+    - Safe to run repeatedly (a second run changes nothing).
+    - Unless force=True (or an explicit `now` is given) it runs at most
+      once per EXPIRY_SWEEP_MIN_INTERVAL_SECONDS per process, and a
+      failure is ignored: the discovery queries also check the deadline
+      themselves, so nothing overdue is ever shown as open.
+    """
+
+    global _last_expiry_sweep
+
+    automatic = not force and now is None
+
+    if automatic:
+        current = _time.monotonic()
+        if (
+            _last_expiry_sweep is not None
+            and current - _last_expiry_sweep < EXPIRY_SWEEP_MIN_INTERVAL_SECONDS
+        ):
+            return 0
+        _last_expiry_sweep = current
+
+    now_text = _to_storage(now or _utc_now())
+
+    try:
+        connection = get_connection()
+        cursor = connection.cursor()
+
+        cursor.execute("""
+            UPDATE help_requests
+            SET status = 'Expired'
+            WHERE status = 'Pending'
+            AND is_removed = 0
+            AND expires_at IS NOT NULL
+            AND expires_at < ?
+        """, (now_text,))
+
+        changed = cursor.rowcount
+
+        connection.commit()
+        connection.close()
+
+    except Exception:
+        if automatic:
+            return 0
+        raise
+
+    return changed if changed and changed > 0 else 0
+
+
+# =========================================================
 # CREATE HELP REQUEST
 # =========================================================
 
@@ -942,7 +1158,8 @@ def create_help_request(
     budget_type,
     budget_amount=None,
     latitude=None,
-    longitude=None
+    longitude=None,
+    expires_at=None
 ):
     """
     Creates a new help request with budget information.
@@ -955,7 +1172,21 @@ def create_help_request(
     budget_amount:
         Amount offered when budget_type is Paid.
     """
+    
+    if isinstance(expires_at, datetime):
+        expires_at = _to_storage(expires_at)
 
+    if expires_at is not None:
+        parsed_expiry = _parse_storage(expires_at)
+
+        if parsed_expiry is None:
+            raise ValueError("The request expiry is not a valid date and time.")
+
+        if parsed_expiry < _utc_now():
+            raise ValueError("The request expiry cannot be in the past.")
+
+        expires_at = _to_storage(parsed_expiry)
+        
     connection = get_connection()
     cursor = connection.cursor()
 
@@ -970,9 +1201,10 @@ def create_help_request(
             budget_type,
             budget_amount,
             latitude,
-            longitude
+            longitude,
+            expires_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         user_id,
         title.strip(),
@@ -982,7 +1214,8 @@ def create_help_request(
         budget_type,
         budget_amount,
         latitude,
-        longitude
+        longitude,
+        expires_at
     ))
 
     connection.commit()
