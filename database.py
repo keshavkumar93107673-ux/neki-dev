@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import turso_compat
 import bcrypt
@@ -2106,6 +2107,193 @@ def get_match_profile(request_id, viewer_id):
 
     return user
 
+
+# =========================================================
+# PROFILE PAGE DATA (ONE STATEMENT)
+# =========================================================
+
+def _skills_from_json(raw):
+    """Skills in the same order as ORDER BY skill COLLATE NOCASE
+    (NOCASE folds ASCII letters only and compares UTF-8 bytes)."""
+    try:
+        skills = json.loads(raw) if raw else []
+    except (TypeError, ValueError):
+        skills = []
+    fold = {c: c + 32 for c in range(65, 91)}
+    return sorted(
+        skills,
+        key=lambda s: (str(s["skill"]).translate(fold), s["id"]),
+    )
+
+
+_PROFILE_STATS_SQL = """
+    (SELECT AVG(rating) FROM ratings
+      WHERE receiver_id = u.id) AS average_rating,
+    (SELECT COUNT(*) FROM ratings
+      WHERE receiver_id = u.id) AS total_ratings,
+    (SELECT COUNT(*) FROM help_requests
+      WHERE helper_id = u.id
+        AND status = 'Completed'
+        AND is_removed = 0) AS completed_helps,
+    (SELECT json_group_array(
+                json_object('id', s.id, 'skill', s.skill))
+       FROM user_skills s
+      WHERE s.user_id = u.id) AS skills_json
+"""
+
+
+def get_profile_page_data(request_id, viewer_id, public):
+    """
+    Everything the Neighbour Profile page shows, in ONE statement
+    and ONE connection (it used to take 5 statements on 4 connections,
+    and the page ran it twice per click).
+
+    public=True  -> get_match_profile() rules, no contact details.
+    public=False -> get_connected_profile() rules, with contact details.
+
+    The permission rules are exactly the ones in those two functions
+    and are applied in Python on the request row that comes back with
+    the user. Returns None when the viewer may not see the profile,
+    otherwise a dict with the profile fields plus:
+        skills, average_rating, total_ratings, completed_helps
+    """
+
+    if public:
+        user_columns = "u.id, u.name, u.location, u.role, u.trust_score,"
+        other_user_sql = """
+            CASE
+                WHEN r.status = 'Pending' THEN r.user_id
+                WHEN r.status = 'Awaiting Requester Approval' THEN
+                    CASE
+                        WHEN ? = r.user_id THEN r.helper_id
+                        WHEN ? = r.helper_id THEN r.user_id
+                    END
+            END
+        """
+    else:
+        user_columns = (
+            "u.id, u.name, u.email, u.location, u.role, u.trust_score,"
+            " u.phone, u.email_verified, u.phone_verified,"
+        )
+        other_user_sql = """
+            CASE
+                WHEN r.helper_id IS NULL THEN NULL
+                WHEN ? = r.user_id THEN r.helper_id
+                WHEN ? = r.helper_id THEN r.user_id
+            END
+        """
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute(f"""
+        SELECT
+            r.user_id AS requester_id,
+            r.helper_id AS request_helper_id,
+            r.status AS request_status,
+            r.is_removed AS request_is_removed,
+            {user_columns}
+            {_PROFILE_STATS_SQL}
+        FROM help_requests r
+        LEFT JOIN users u ON u.id = {other_user_sql}
+        WHERE r.id = ?
+    """, (viewer_id, viewer_id, request_id))
+
+    row = cursor.fetchone()
+
+    connection.close()
+
+    if row is None or row["request_is_removed"] == 1:
+        return None
+
+    requester_id = row["requester_id"]
+    helper_id = row["request_helper_id"]
+    status = row["request_status"]
+
+    if public:
+
+        if status == "Pending":
+            if viewer_id == requester_id:
+                return None
+
+        elif status == "Awaiting Requester Approval":
+            if helper_id is None:
+                return None
+            if viewer_id not in (requester_id, helper_id):
+                return None
+
+        else:
+            return None
+
+    else:
+
+        if helper_id is None:
+            return None
+
+        if viewer_id not in (requester_id, helper_id):
+            return None
+
+        if status not in (
+            "Awaiting Requester Approval",
+            "Accepted",
+            "Help Provided",
+            "Completed",
+        ):
+            return None
+
+    if row["id"] is None:
+        return None
+
+    profile = {
+        "id": row["id"],
+        "name": row["name"],
+        "location": row["location"],
+        "role": row["role"],
+        "trust_score": row["trust_score"],
+        "skills": _skills_from_json(row["skills_json"]),
+        "average_rating": round(row["average_rating"] or 0, 1),
+        "total_ratings": row["total_ratings"] or 0,
+        "completed_helps": row["completed_helps"] or 0,
+    }
+
+    if not public:
+        for column in (
+            "email", "phone", "email_verified", "phone_verified",
+        ):
+            profile[column] = row[column]
+
+    return profile
+
+
+def get_user_with_skills(user_id):
+    """
+    The user's row (same columns as get_user_by_id) plus their skills
+    (same order as get_user_skills) in ONE statement.
+    Returns (user, skills); user is None when the id does not exist.
+    """
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT
+            u.*,
+            (SELECT json_group_array(
+                        json_object('id', s.id, 'skill', s.skill))
+               FROM user_skills s
+              WHERE s.user_id = u.id) AS skills_json
+        FROM users u
+        WHERE u.id = ?
+    """, (user_id,))
+
+    row = cursor.fetchone()
+
+    connection.close()
+
+    if row is None:
+        return None, []
+
+    return row, _skills_from_json(row["skills_json"])
     
 # =========================================================
 # GET PEOPLE HELPED COUNT
@@ -3116,52 +3304,36 @@ def create_report(
     cursor = connection.cursor()
 
     # -------------------------------------------------
-    # PREVENT DUPLICATE REPORTS
+    # DUPLICATE CHECK + INSERT IN ONE STATEMENT
     # -------------------------------------------------
+    # The row is inserted only when this reporter has no unresolved
+    # report for the same item. One round trip instead of two, and two
+    # simultaneous submissions can no longer both pass the check.
 
     if report_type == "Request":
 
-        cursor.execute("""
-            SELECT id
-            FROM reports
+        duplicate_sql = """
+            SELECT 1 FROM reports
             WHERE reporter_id = ?
             AND reported_user_id = ?
             AND request_id = ?
             AND report_type = 'Request'
             AND status != 'Resolved'
-            LIMIT 1
-        """, (
-            reporter_id,
-            reported_user_id,
-            request_id
-        ))
+        """
+        duplicate_params = (reporter_id, reported_user_id, request_id)
 
     else:
 
-        cursor.execute("""
-            SELECT id
-            FROM reports
+        duplicate_sql = """
+            SELECT 1 FROM reports
             WHERE reporter_id = ?
             AND reported_user_id = ?
             AND report_type = 'Profile'
             AND status != 'Resolved'
-            LIMIT 1
-        """, (
-            reporter_id,
-            reported_user_id
-        ))
+        """
+        duplicate_params = (reporter_id, reported_user_id)
 
-    existing_report = cursor.fetchone()
-
-    if existing_report:
-        connection.close()
-        return None
-
-    # -------------------------------------------------
-    # CREATE NEW REPORT
-    # -------------------------------------------------
-
-    cursor.execute("""
+    cursor.execute(f"""
         INSERT INTO reports
         (
             reporter_id,
@@ -3170,15 +3342,24 @@ def create_report(
             reason,
             report_type
         )
-        VALUES (?, ?, ?, ?, ?)
+        SELECT ?, ?, ?, ?, ?
+        WHERE NOT EXISTS ({duplicate_sql})
     """, (
         reporter_id,
         reported_user_id,
         request_id,
         reason.strip(),
-        report_type
-    ))
+        report_type,
+    ) + duplicate_params)
 
+    inserted = cursor.rowcount
+
+    if inserted == 0:
+        # An unresolved report for this item already exists. Nothing
+        # was written; closing the connection discards the transaction.
+        connection.close()
+        return None
+        
     connection.commit()
 
     report_id = cursor.lastrowid
