@@ -84,6 +84,8 @@ from database import (
     get_request_messages,
     send_request_message,
     get_user_skills,
+    get_profile_page_data,
+    get_user_with_skills,
     add_user_skill,
     delete_user_skill,
     
@@ -906,6 +908,7 @@ restore_browser_login()
 # REPORT UI
 # =========================================================
 
+@st.fragment
 def render_report_action(
     *,
     report_key,
@@ -915,12 +918,31 @@ def render_report_action(
 ):
     """
     Displays a clean report action for a user or request.
+
+    This is a fragment: opening, cancelling and submitting the form
+    re-run only this small block, not the whole page behind it (the
+    page used to reload every list and profile query on each click).
     """
 
     if reported_user_id == st.session_state.user_id:
         return
 
     show_key = f"show_report_{report_key}"
+    notice_key = f"report_notice_{report_key}"
+
+    # Result of the last submit, shown once after the form closes.
+    notice = st.session_state.pop(notice_key, None)
+
+    if notice == "duplicate":
+        st.warning(
+            "You have already submitted a report for this "
+            "item. Our admin team will review it."
+        )
+    elif notice == "created":
+        st.success(
+            "✓ Report submitted successfully. "
+            "Our admin team will review it."
+        )
 
     # -----------------------------------------------------
     # REPORT BUTTON
@@ -987,21 +1009,14 @@ def render_report_action(
 
                         if report_id is None:
 
-                            st.warning(
-                                "You have already submitted a report for this "
-                                "item. Our admin team will review it."
-                            )
+                            st.session_state[notice_key] = "duplicate"
 
                         else:
 
                             st.session_state[show_key] = False
+                            st.session_state[notice_key] = "created"
 
-                            st.success(
-                                "✓ Report submitted successfully. "
-                                "Our admin team will review it."
-                            )
-
-                        st.rerun()
+                        st.rerun(scope="fragment")
 
             with col2:
 
@@ -1013,7 +1028,8 @@ def render_report_action(
 
                     st.session_state[show_key] = False
 
-                    st.rerun()
+                    st.rerun(scope="fragment")
+                    
 
 # =========================================================
 # EMAIL VERIFICATION
@@ -1361,15 +1377,55 @@ if st.session_state.get("new_rating_alert", False):
 
 
 
+# How long the Neighbour Profile data fetched when the profile was
+# opened may be reused by reruns of that page (Report button, live
+# refresh ...). The cache lives in this user's own session only, is
+# keyed by viewer + request + public/private, is replaced every time a
+# profile is opened and is dropped when the user leaves the page.
+PROFILE_CACHE_SECONDS = 20
+
+
+def load_profile_page_data(request_id, public, force=False):
+    """Profile + skills + rating stats + completed helps, fetched with
+    ONE database statement and reused for PROFILE_CACHE_SECONDS."""
+
+    key = (st.session_state.user_id, request_id, bool(public))
+
+    cached = st.session_state.get("_profile_cache")
+
+    if (
+        not force
+        and cached
+        and cached["key"] == key
+        and time.time() - cached["ts"] < PROFILE_CACHE_SECONDS
+    ):
+        return cached["data"]
+
+    data = get_profile_page_data(
+        request_id=request_id,
+        viewer_id=st.session_state.user_id,
+        public=public,
+    )
+
+    st.session_state["_profile_cache"] = {
+        "key": key,
+        "ts": time.time(),
+        "data": data,
+    }
+
+    return data
+
+
 def open_connection_profile(request_id):
     """
     Opens the profile of the other person involved
     in an accepted help connection.
     """
 
-    profile = get_connected_profile(
-        request_id=request_id,
-        viewer_id=st.session_state.user_id,
+    # One fetch here; the profile page reuses it instead of reading
+    # everything again after the rerun.
+    profile = load_profile_page_data(
+        request_id, public=False, force=True,
     )
 
     if profile is None:
@@ -1398,9 +1454,8 @@ def open_match_profile(request_id):
     No private contact information is shown.
     """
 
-    profile = get_match_profile(
-        request_id=request_id,
-        viewer_id=st.session_state.user_id,
+    profile = load_profile_page_data(
+        request_id, public=True, force=True,
     )
 
     if profile is None:
@@ -6308,7 +6363,8 @@ elif st.session_state.page == "Profile":
     # Get the latest profile data from the database
     # -----------------------------------------------------
 
-    current_user = get_user_by_id(
+    # User row and skills together: one statement instead of two.
+    current_user, current_skills = get_user_with_skills(
         st.session_state.user_id
     )
 
@@ -6491,9 +6547,9 @@ elif st.session_state.page == "Profile":
                             "This skill already exists or is invalid."
                         )
 
-                current_skills = get_user_skills(
-                    st.session_state.user_id
-                )
+                # current_skills was loaded with the profile above. A
+                # successful add or delete reruns the page, so it is
+                # never out of date when it is drawn.
 
                 if current_skills:
                     st.markdown(
@@ -6655,11 +6711,13 @@ elif st.session_state.page == "Connection Profile":
 
     else:
 
-        if profile_is_public and profile_request_id:
+        if profile_request_id:
 
-            profile = get_match_profile(
-                request_id=profile_request_id,
-                viewer_id=st.session_state.user_id,
+            # Already fetched (in one statement) when the profile was
+            # opened; re-read only after PROFILE_CACHE_SECONDS.
+            profile = load_profile_page_data(
+                profile_request_id,
+                public=bool(profile_is_public),
             )
 
         else:
@@ -6667,7 +6725,6 @@ elif st.session_state.page == "Connection Profile":
             profile = get_user_by_id(
                 profile_user_id
             )
-
         if profile is None:
 
             st.error(
@@ -6760,7 +6817,10 @@ elif st.session_state.page == "Connection Profile":
             # SKILLS
             # -------------------------------------------------
 
-            profile_skills = get_user_skills(profile_user_id)
+            if "skills" in profile.keys():
+                profile_skills = profile["skills"]
+            else:
+                profile_skills = get_user_skills(profile_user_id)
 
             with st.container(key="public_profile_skills", border=True):
                 st.markdown("### 🛠️ Skills")
@@ -6783,13 +6843,18 @@ elif st.session_state.page == "Connection Profile":
             # RATING & COMMUNITY ACTIVITY
             # -------------------------------------------------
 
-            average_rating, total_ratings = get_user_rating_stats(
-                profile_user_id
-            )
+            if "average_rating" in profile.keys():
+                average_rating = profile["average_rating"]
+                total_ratings = profile["total_ratings"]
+                completed_helps = profile["completed_helps"]
+            else:
+                average_rating, total_ratings = get_user_rating_stats(
+                    profile_user_id
+                )
 
-            completed_helps = get_people_helped_count(
-                profile_user_id
-            )
+                completed_helps = get_people_helped_count(
+                    profile_user_id
+                )
 
             with st.container(border=True):
 
@@ -6887,6 +6952,7 @@ elif st.session_state.page == "Connection Profile":
             ):
                 st.session_state.profile_is_public = False
                 st.session_state.profile_view_request_id = None
+                st.session_state["_profile_cache"] = None
                 st.session_state.page = back_page
                 st.rerun()
 
