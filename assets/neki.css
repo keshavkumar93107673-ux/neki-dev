@@ -12209,3 +12209,503 @@ button[data-testid="stBaseButton-primaryFormSubmit"] p {
 .stApp:has(.neki-theme.light) .st-key-profile_location [data-testid="stWidgetLabel"] {
     color: #183B28 !important;
 }
+
+
+
+
+/* =========================================================
+   NEKI — BUTTON SYSTEM (consistent action buttons)
+   Keep this block at the very bottom of assets/neki.css.
+
+   Why it exists: Streamlit draws a button label inside
+   <div data-testid="stMarkdownContainer"><p>. The request-card
+   "description text" rules matched that <p> too, so the label ignored
+   the button's own colour (pale text on green). Several other green
+   buttons used white text on a bright green, which is hard to read.
+   Every rule below sets the button colour AND makes the label follow it.
+
+   The triple .stApp only out-ranks the older layered rules above;
+   it does not change which elements are matched.
+
+   Families (matched by the existing st.button keys, no app.py change):
+   - SUCCESS   solid rich green, white text
+   - CTA       main call-to-action buttons: Post Help Request, Sign in,
+               Create account, Send Reset Link, Reset Password (dark theme
+               keeps its bright green with dark text; light theme uses
+               the SUCCESS green)
+   - DANGER    solid red, white text
+   - SOFT RED  outlined red (remove, decline, open report)
+   - NEUTRAL   outlined, quiet (everything else inside a request card,
+               plus Cancel in the report / remove flows)
+   ========================================================= */
+
+/* ---------- Colour tokens (dark is the default theme) ---------- */
+
+.stApp {
+    --nkb-succ-bg: linear-gradient(135deg, #15803D 0%, #116B33 100%);
+    --nkb-succ-bg-hover: linear-gradient(135deg, #15803D 0%, #0F6431 100%);
+    --nkb-succ-border: #1E9A4F;
+    --nkb-succ-shadow: 0 3px 10px rgba(21, 128, 61, 0.30);
+    --nkb-succ-shadow-hover: 0 6px 16px rgba(21, 128, 61, 0.38);
+
+    --nkb-cta-bg: #19B968;
+    --nkb-cta-bg-hover: #16A85D;
+    --nkb-cta-fg: #07150D;
+    --nkb-cta-border: transparent;
+    --nkb-cta-shadow: 0 3px 10px rgba(25, 185, 104, 0.20);
+    --nkb-cta-shadow-hover: 0 6px 16px rgba(25, 185, 104, 0.28);
+
+    --nkb-dang-bg: #B3303F;
+    --nkb-dang-bg-hover: #962636;
+    --nkb-dang-shadow: 0 3px 10px rgba(179, 48, 63, 0.28);
+    --nkb-dang-shadow-hover: 0 6px 16px rgba(179, 48, 63, 0.36);
+
+    --nkb-soft-bg: rgba(239, 107, 107, 0.08);
+    --nkb-soft-border: rgba(239, 107, 107, 0.40);
+    --nkb-soft-fg: #FFB4B4;
+    --nkb-soft-bg-hover: rgba(239, 107, 107, 0.16);
+    --nkb-soft-border-hover: rgba(239, 107, 107, 0.65);
+    --nkb-soft-fg-hover: #FFD1D1;
+
+    --nkb-neu-bg: #171C23;
+    --nkb-neu-border: #303943;
+    --nkb-neu-fg: #E8EDF2;
+    --nkb-neu-bg-hover: rgba(55, 201, 120, 0.10);
+    --nkb-neu-border-hover: rgba(55, 201, 120, 0.45);
+    --nkb-neu-fg-hover: #6EE7A0;
+
+    --nkb-ring-green: rgba(74, 222, 128, 0.75);
+    --nkb-ring-red: rgba(248, 113, 113, 0.75);
+}
+
+.stApp:has(.neki-theme.light) {
+    --nkb-succ-border: #15803D;
+    --nkb-succ-shadow: 0 3px 10px rgba(21, 128, 61, 0.24);
+    --nkb-succ-shadow-hover: 0 6px 16px rgba(21, 128, 61, 0.32);
+
+    /* Light theme: CTA buttons use the rich green so white text reads */
+    --nkb-cta-bg: var(--nkb-succ-bg);
+    --nkb-cta-bg-hover: var(--nkb-succ-bg-hover);
+    --nkb-cta-fg: #FFFFFF;
+    --nkb-cta-border: #15803D;
+    --nkb-cta-shadow: var(--nkb-succ-shadow);
+    --nkb-cta-shadow-hover: var(--nkb-succ-shadow-hover);
+
+    --nkb-dang-shadow: 0 3px 10px rgba(179, 48, 63, 0.22);
+    --nkb-dang-shadow-hover: 0 6px 16px rgba(179, 48, 63, 0.30);
+
+    --nkb-soft-bg: #FFF5F4;
+    --nkb-soft-border: #F3B8B3;
+    --nkb-soft-fg: #B42318;
+    --nkb-soft-bg-hover: #FEE4E2;
+    --nkb-soft-border-hover: #E5857E;
+    --nkb-soft-fg-hover: #912018;
+
+    --nkb-neu-bg: #FFFFFF;
+    --nkb-neu-border: #D5E3D9;
+    --nkb-neu-fg: #34423A;
+    --nkb-neu-bg-hover: #F0FBF4;
+    --nkb-neu-border-hover: #86D4A1;
+    --nkb-neu-fg-hover: #15803D;
+
+    --nkb-ring-green: rgba(22, 163, 74, 0.70);
+    --nkb-ring-red: rgba(180, 35, 24, 0.60);
+}
+
+/* ---------- Shared shape (compact action buttons only) ---------- */
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-my_request_card_"],
+    [class*="st-key-my_accepted_request_card_"],
+    [class*="st-key-find_help_request_card_"],
+    [class*="st-key-provided_"],
+    [class*="st-key-approve_helper_"],
+    [class*="st-key-accept_"],
+    [class*="st-key-confirm_completed_"],
+    [class*="st-key-confirm_remove_"],
+    [class*="st-key-submit_report_"],
+    [class*="st-key-remove_own_request_"],
+    [class*="st-key-decline_helper_"],
+    [class*="st-key-report_button_"],
+    [class*="st-key-cancel_report_"],
+    [class*="st-key-cancel_remove_"]
+) .stButton > button {
+    min-height: 40px !important;
+    padding: 8px 16px !important;
+    border-radius: 10px !important;
+    font-size: 13px !important;
+    font-weight: 700 !important;
+    line-height: 1.25 !important;
+    letter-spacing: 0 !important;
+}
+
+/* ---------- Motion and opacity (every button in these families) ---------- */
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-my_request_card_"],
+    [class*="st-key-my_accepted_request_card_"],
+    [class*="st-key-find_help_request_card_"],
+    [class*="st-key-provided_"],
+    [class*="st-key-approve_helper_"],
+    [class*="st-key-accept_"],
+    [class*="st-key-confirm_completed_"],
+    [class*="st-key-start_journey_"],
+    [class*="st-key-arrived_journey_"],
+    [class*="st-key-submit_rating_"],
+    [class*="st-key-request_post_help"],
+    [class*="st-key-login_submit"],
+    [class*="st-key-register_submit"],
+    [class*="st-key-confirm_remove_"],
+    [class*="st-key-submit_report_"],
+    [class*="st-key-remove_own_request_"],
+    [class*="st-key-decline_helper_"],
+    [class*="st-key-report_button_"],
+    [class*="st-key-cancel_report_"],
+    [class*="st-key-cancel_remove_"]
+) .stButton > button,
+.stApp.stApp.stApp:has(.neki-theme):has(.profile-page) .stButton > button[kind="primary"],
+.stApp.stApp.stApp:has(.neki-theme) [class*="st-key-profile_skills_editor"] button[data-testid="stBaseButton-primaryFormSubmit"],
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-forgot_password_form"],
+    [class*="st-key-password_reset_form"],
+    [class*="st-key-formSubmitter-forgot_password_form"],
+    [class*="st-key-formSubmitter-password_reset_form"]
+) button[data-testid="stBaseButton-primaryFormSubmit"] {
+    opacity: 1 !important;
+    transition:
+        background .18s ease,
+        border-color .18s ease,
+        color .18s ease,
+        box-shadow .18s ease,
+        transform .18s ease !important;
+}
+
+/* The label always follows the button colour */
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-my_request_card_"],
+    [class*="st-key-my_accepted_request_card_"],
+    [class*="st-key-find_help_request_card_"],
+    [class*="st-key-provided_"],
+    [class*="st-key-approve_helper_"],
+    [class*="st-key-accept_"],
+    [class*="st-key-confirm_completed_"],
+    [class*="st-key-start_journey_"],
+    [class*="st-key-arrived_journey_"],
+    [class*="st-key-submit_rating_"],
+    [class*="st-key-request_post_help"],
+    [class*="st-key-login_submit"],
+    [class*="st-key-register_submit"],
+    [class*="st-key-confirm_remove_"],
+    [class*="st-key-submit_report_"],
+    [class*="st-key-remove_own_request_"],
+    [class*="st-key-decline_helper_"],
+    [class*="st-key-report_button_"],
+    [class*="st-key-cancel_report_"],
+    [class*="st-key-cancel_remove_"]
+) .stButton > button [data-testid="stMarkdownContainer"],
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-my_request_card_"],
+    [class*="st-key-my_accepted_request_card_"],
+    [class*="st-key-find_help_request_card_"],
+    [class*="st-key-provided_"],
+    [class*="st-key-approve_helper_"],
+    [class*="st-key-accept_"],
+    [class*="st-key-confirm_completed_"],
+    [class*="st-key-start_journey_"],
+    [class*="st-key-arrived_journey_"],
+    [class*="st-key-submit_rating_"],
+    [class*="st-key-request_post_help"],
+    [class*="st-key-login_submit"],
+    [class*="st-key-register_submit"],
+    [class*="st-key-confirm_remove_"],
+    [class*="st-key-submit_report_"],
+    [class*="st-key-remove_own_request_"],
+    [class*="st-key-decline_helper_"],
+    [class*="st-key-report_button_"],
+    [class*="st-key-cancel_report_"],
+    [class*="st-key-cancel_remove_"]
+) .stButton > button p,
+.stApp.stApp.stApp:has(.neki-theme):has(.profile-page) .stButton > button[kind="primary"] [data-testid="stMarkdownContainer"],
+.stApp.stApp.stApp:has(.neki-theme):has(.profile-page) .stButton > button[kind="primary"] p,
+.stApp.stApp.stApp:has(.neki-theme) [class*="st-key-profile_skills_editor"] button[data-testid="stBaseButton-primaryFormSubmit"] [data-testid="stMarkdownContainer"],
+.stApp.stApp.stApp:has(.neki-theme) [class*="st-key-profile_skills_editor"] button[data-testid="stBaseButton-primaryFormSubmit"] p,
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-forgot_password_form"],
+    [class*="st-key-password_reset_form"],
+    [class*="st-key-formSubmitter-forgot_password_form"],
+    [class*="st-key-formSubmitter-password_reset_form"]
+) button[data-testid="stBaseButton-primaryFormSubmit"] [data-testid="stMarkdownContainer"],
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-forgot_password_form"],
+    [class*="st-key-password_reset_form"],
+    [class*="st-key-formSubmitter-forgot_password_form"],
+    [class*="st-key-formSubmitter-password_reset_form"]
+) button[data-testid="stBaseButton-primaryFormSubmit"] p {
+    color: inherit !important;
+    font-size: inherit !important;
+    font-weight: inherit !important;
+    line-height: inherit !important;
+    opacity: 1 !important;
+    margin: 0 !important;
+}
+
+/* ---------- NEUTRAL (secondary) ---------- */
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-my_request_card_"],
+    [class*="st-key-my_accepted_request_card_"],
+    [class*="st-key-find_help_request_card_"],
+    [class*="st-key-cancel_report_"],
+    [class*="st-key-cancel_remove_"]
+) .stButton > button {
+    background: var(--nkb-neu-bg) !important;
+    background-image: none !important;
+    border: 1px solid var(--nkb-neu-border) !important;
+    color: var(--nkb-neu-fg) !important;
+    box-shadow: none !important;
+}
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-my_request_card_"],
+    [class*="st-key-my_accepted_request_card_"],
+    [class*="st-key-find_help_request_card_"],
+    [class*="st-key-cancel_report_"],
+    [class*="st-key-cancel_remove_"]
+) .stButton > button:hover {
+    background: var(--nkb-neu-bg-hover) !important;
+    border-color: var(--nkb-neu-border-hover) !important;
+    color: var(--nkb-neu-fg-hover) !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.10) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* ---------- SOFT RED (outlined: remove, decline, open report) ---------- */
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-remove_own_request_"],
+    [class*="st-key-decline_helper_"],
+    [class*="st-key-report_button_"]
+) .stButton > button {
+    background: var(--nkb-soft-bg) !important;
+    background-image: none !important;
+    border: 1px solid var(--nkb-soft-border) !important;
+    color: var(--nkb-soft-fg) !important;
+    box-shadow: none !important;
+}
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-remove_own_request_"],
+    [class*="st-key-decline_helper_"],
+    [class*="st-key-report_button_"]
+) .stButton > button:hover {
+    background: var(--nkb-soft-bg-hover) !important;
+    border-color: var(--nkb-soft-border-hover) !important;
+    color: var(--nkb-soft-fg-hover) !important;
+    box-shadow: 0 4px 12px rgba(239, 107, 107, 0.12) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* ---------- SUCCESS (solid rich green, white text) ---------- */
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-provided_"],
+    [class*="st-key-approve_helper_"],
+    [class*="st-key-accept_"],
+    [class*="st-key-confirm_completed_"],
+    [class*="st-key-start_journey_"],
+    [class*="st-key-arrived_journey_"],
+    [class*="st-key-submit_rating_"]
+) .stButton > button,
+.stApp.stApp.stApp:has(.neki-theme):has(.profile-page) .stButton > button[kind="primary"],
+.stApp.stApp.stApp:has(.neki-theme) [class*="st-key-profile_skills_editor"] button[data-testid="stBaseButton-primaryFormSubmit"] {
+    background: var(--nkb-succ-bg) !important;
+    background-image: var(--nkb-succ-bg) !important;
+    border: 1px solid var(--nkb-succ-border) !important;
+    color: #FFFFFF !important;
+    box-shadow: var(--nkb-succ-shadow) !important;
+}
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-provided_"],
+    [class*="st-key-approve_helper_"],
+    [class*="st-key-accept_"],
+    [class*="st-key-confirm_completed_"],
+    [class*="st-key-start_journey_"],
+    [class*="st-key-arrived_journey_"],
+    [class*="st-key-submit_rating_"]
+) .stButton > button:hover,
+.stApp.stApp.stApp:has(.neki-theme):has(.profile-page) .stButton > button[kind="primary"]:hover,
+.stApp.stApp.stApp:has(.neki-theme) [class*="st-key-profile_skills_editor"] button[data-testid="stBaseButton-primaryFormSubmit"]:hover {
+    background: var(--nkb-succ-bg-hover) !important;
+    background-image: var(--nkb-succ-bg-hover) !important;
+    color: #FFFFFF !important;
+    box-shadow: var(--nkb-succ-shadow-hover) !important;
+    transform: translateY(-1px) !important;
+    filter: none !important;
+}
+
+/* ---------- CTA (Post Help Request, Sign in, Create account) ---------- */
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-request_post_help"],
+    [class*="st-key-login_submit"],
+    [class*="st-key-register_submit"]
+) .stButton > button,
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-forgot_password_form"],
+    [class*="st-key-password_reset_form"],
+    [class*="st-key-formSubmitter-forgot_password_form"],
+    [class*="st-key-formSubmitter-password_reset_form"]
+) button[data-testid="stBaseButton-primaryFormSubmit"] {
+    background: var(--nkb-cta-bg) !important;
+    background-image: var(--nkb-cta-bg) !important;
+    border: 1px solid var(--nkb-cta-border) !important;
+    color: var(--nkb-cta-fg) !important;
+    box-shadow: var(--nkb-cta-shadow) !important;
+}
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-request_post_help"],
+    [class*="st-key-login_submit"],
+    [class*="st-key-register_submit"]
+) .stButton > button:hover,
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-forgot_password_form"],
+    [class*="st-key-password_reset_form"],
+    [class*="st-key-formSubmitter-forgot_password_form"],
+    [class*="st-key-formSubmitter-password_reset_form"]
+) button[data-testid="stBaseButton-primaryFormSubmit"]:hover {
+    background: var(--nkb-cta-bg-hover) !important;
+    background-image: var(--nkb-cta-bg-hover) !important;
+    color: var(--nkb-cta-fg) !important;
+    box-shadow: var(--nkb-cta-shadow-hover) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* ---------- DANGER (solid red, white text) ---------- */
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-confirm_remove_"],
+    [class*="st-key-submit_report_"]
+) .stButton > button {
+    background: var(--nkb-dang-bg) !important;
+    background-image: none !important;
+    border: 1px solid transparent !important;
+    color: #FFFFFF !important;
+    box-shadow: var(--nkb-dang-shadow) !important;
+}
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-confirm_remove_"],
+    [class*="st-key-submit_report_"]
+) .stButton > button:hover {
+    background: var(--nkb-dang-bg-hover) !important;
+    color: #FFFFFF !important;
+    box-shadow: var(--nkb-dang-shadow-hover) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* ---------- Pressed, keyboard focus, disabled ---------- */
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-my_request_card_"],
+    [class*="st-key-my_accepted_request_card_"],
+    [class*="st-key-find_help_request_card_"],
+    [class*="st-key-provided_"],
+    [class*="st-key-approve_helper_"],
+    [class*="st-key-accept_"],
+    [class*="st-key-confirm_completed_"],
+    [class*="st-key-start_journey_"],
+    [class*="st-key-arrived_journey_"],
+    [class*="st-key-submit_rating_"],
+    [class*="st-key-request_post_help"],
+    [class*="st-key-login_submit"],
+    [class*="st-key-register_submit"],
+    [class*="st-key-confirm_remove_"],
+    [class*="st-key-submit_report_"],
+    [class*="st-key-remove_own_request_"],
+    [class*="st-key-decline_helper_"],
+    [class*="st-key-report_button_"],
+    [class*="st-key-cancel_report_"],
+    [class*="st-key-cancel_remove_"]
+) .stButton > button:active:not(:disabled),
+.stApp.stApp.stApp:has(.neki-theme):has(.profile-page) .stButton > button[kind="primary"]:active:not(:disabled),
+.stApp.stApp.stApp:has(.neki-theme) [class*="st-key-profile_skills_editor"] button[data-testid="stBaseButton-primaryFormSubmit"]:active:not(:disabled) {
+    transform: translateY(0) !important;
+    box-shadow: none !important;
+}
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-my_request_card_"],
+    [class*="st-key-my_accepted_request_card_"],
+    [class*="st-key-find_help_request_card_"],
+    [class*="st-key-provided_"],
+    [class*="st-key-approve_helper_"],
+    [class*="st-key-accept_"],
+    [class*="st-key-confirm_completed_"],
+    [class*="st-key-start_journey_"],
+    [class*="st-key-arrived_journey_"],
+    [class*="st-key-submit_rating_"],
+    [class*="st-key-request_post_help"],
+    [class*="st-key-login_submit"],
+    [class*="st-key-register_submit"],
+    [class*="st-key-confirm_remove_"],
+    [class*="st-key-submit_report_"],
+    [class*="st-key-remove_own_request_"],
+    [class*="st-key-decline_helper_"],
+    [class*="st-key-report_button_"],
+    [class*="st-key-cancel_report_"],
+    [class*="st-key-cancel_remove_"]
+) .stButton > button:focus-visible,
+.stApp.stApp.stApp:has(.neki-theme):has(.profile-page) .stButton > button[kind="primary"]:focus-visible,
+.stApp.stApp.stApp:has(.neki-theme) [class*="st-key-profile_skills_editor"] button[data-testid="stBaseButton-primaryFormSubmit"]:focus-visible,
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-forgot_password_form"],
+    [class*="st-key-password_reset_form"],
+    [class*="st-key-formSubmitter-forgot_password_form"],
+    [class*="st-key-formSubmitter-password_reset_form"]
+) button[data-testid="stBaseButton-primaryFormSubmit"]:focus-visible {
+    outline: 2px solid var(--nkb-ring-green) !important;
+    outline-offset: 2px !important;
+}
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-remove_own_request_"],
+    [class*="st-key-decline_helper_"],
+    [class*="st-key-report_button_"],
+    [class*="st-key-confirm_remove_"],
+    [class*="st-key-submit_report_"]
+) .stButton > button:focus-visible {
+    outline-color: var(--nkb-ring-red) !important;
+}
+
+.stApp.stApp.stApp:has(.neki-theme) :is(
+    [class*="st-key-my_request_card_"],
+    [class*="st-key-my_accepted_request_card_"],
+    [class*="st-key-find_help_request_card_"],
+    [class*="st-key-provided_"],
+    [class*="st-key-approve_helper_"],
+    [class*="st-key-accept_"],
+    [class*="st-key-confirm_completed_"],
+    [class*="st-key-start_journey_"],
+    [class*="st-key-arrived_journey_"],
+    [class*="st-key-submit_rating_"],
+    [class*="st-key-request_post_help"],
+    [class*="st-key-login_submit"],
+    [class*="st-key-register_submit"],
+    [class*="st-key-confirm_remove_"],
+    [class*="st-key-submit_report_"],
+    [class*="st-key-remove_own_request_"],
+    [class*="st-key-decline_helper_"],
+    [class*="st-key-report_button_"],
+    [class*="st-key-cancel_report_"],
+    [class*="st-key-cancel_remove_"]
+) .stButton > button:disabled,
+.stApp.stApp.stApp:has(.neki-theme):has(.profile-page) .stButton > button[kind="primary"]:disabled,
+.stApp.stApp.stApp:has(.neki-theme) [class*="st-key-profile_skills_editor"] button[data-testid="stBaseButton-primaryFormSubmit"]:disabled {
+    opacity: 0.5 !important;
+    cursor: not-allowed !important;
+    transform: none !important;
+    box-shadow: none !important;
+}
