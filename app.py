@@ -1231,12 +1231,34 @@ def global_live_refresh():
     )
 
     # -----------------------------------------------------
+    # FIRST CHECK FOR THIS USER IN THIS SESSION
+    # -----------------------------------------------------
+    # Whatever is already unread when a user logs in, is restored or
+    # the page is refreshed is OLD. Only remember the numbers (the
+    # sidebar badges still show them); never raise a toast for them.
+
+    if (
+        st.session_state.get("_live_baseline_user")
+        != st.session_state.user_id
+    ):
+
+        st.session_state["_live_baseline_user"] = (
+            st.session_state.user_id
+        )
+
+        st.session_state.new_notification_alert = False
+        st.session_state.notification_alert_message = ""
+        st.session_state.new_rating_alert = False
+        st.session_state["_live_latest_notification"] = None
+
+        previous_notification_count = unread_notification_count
+        previous_rating_count = unread_rating_count
+
+    # -----------------------------------------------------
     # NEW NORMAL NOTIFICATION
     # -----------------------------------------------------
 
     if unread_notification_count > previous_notification_count:
-
-        st.session_state.new_notification_alert = True
 
         notifications = get_notifications(
             st.session_state.user_id,
@@ -1250,11 +1272,19 @@ def global_live_refresh():
                 and notification["type"] != "rating_received"
             ):
 
-                st.session_state.notification_alert_message = (
-                    notification["message"]
-                )
+                # The alert flag is only raised together with a real
+                # message, so the toast below can never get an empty one.
+                _alert_text = notification["message"]
 
-                st.session_state.notification_alert_icon = "🔔"
+                if isinstance(_alert_text, str) and _alert_text.strip():
+
+                    st.session_state.notification_alert_message = (
+                        _alert_text
+                    )
+
+                    st.session_state.notification_alert_icon = "🔔"
+
+                    st.session_state.new_notification_alert = True
 
                 break
 
@@ -1348,11 +1378,16 @@ finally:
 
 
 
+
 if st.session_state.get("new_notification_alert", False):
 
     _alert_message = st.session_state.get("notification_alert_message")
 
-    if isinstance(_alert_message, str) and _alert_message.strip():
+    if (
+        st.session_state.logged_in
+        and isinstance(_alert_message, str)
+        and _alert_message.strip()
+    ):
 
         st.toast(
             _alert_message.strip(),
@@ -1362,29 +1397,18 @@ if st.session_state.get("new_notification_alert", False):
     st.session_state.new_notification_alert = False
     st.session_state.notification_alert_message = ""
 
-    st.toast(
-        st.session_state.get(
-            "notification_alert_message",
-            "You have a new notification."
-        ),
-        icon=st.session_state.get(
-            "notification_alert_icon",
-            "🔔"
-        )
-    )
-
-    st.session_state.new_notification_alert = False
-    st.session_state.notification_alert_message = ""
-
 
 if st.session_state.get("new_rating_alert", False):
 
-    st.toast(
-        "⭐ You received a new rating!",
-        icon="⭐"
-    )
+    if st.session_state.logged_in:
+
+        st.toast(
+            "⭐ You received a new rating!",
+            icon="⭐"
+        )
 
     st.session_state.new_rating_alert = False
+
 
 
 
@@ -1753,13 +1777,25 @@ with st.sidebar:
             # It is browser-wide and may be needed by another tab.
             
 
+            
             st.session_state.logged_in = False
             st.session_state.user_id = None
             st.session_state.user_role = "User"
             st.session_state.user_name = "Neighbour"
             st.session_state.page = "Login"
 
+            # Clear previous user's notification state
+            st.session_state.new_notification_alert = False
+            st.session_state.notification_alert_message = ""
+            st.session_state.new_rating_alert = False
+            st.session_state.notification_unread_count = 0
+            st.session_state.rating_unread_count = 0
+            st.session_state["_live_baseline_user"] = None
+            st.session_state["_live_latest_notification"] = None
+            st.session_state["_live_checked"] = None
+
             st.session_state.persistent_login_checked = True
+
             
             st.rerun()
 
