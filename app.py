@@ -1350,6 +1350,18 @@ finally:
 
 if st.session_state.get("new_notification_alert", False):
 
+    _alert_message = st.session_state.get("notification_alert_message")
+
+    if isinstance(_alert_message, str) and _alert_message.strip():
+
+        st.toast(
+            _alert_message.strip(),
+            icon=st.session_state.get("notification_alert_icon") or "🔔"
+        )
+
+    st.session_state.new_notification_alert = False
+    st.session_state.notification_alert_message = ""
+
     st.toast(
         st.session_state.get(
             "notification_alert_message",
