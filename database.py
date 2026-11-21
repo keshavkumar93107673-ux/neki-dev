@@ -893,7 +893,49 @@ def get_all_users():
     connection.close()
 
     return users
+    
+# =========================================================
+# VIBRATION PREFERENCE
+# =========================================================
 
+def get_vibration_enabled(user_id):
+    """True when the user wants vibration feedback (the default)."""
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute(
+        "SELECT vibration_enabled FROM users WHERE id = ?",
+        (user_id,),
+    )
+
+    row = cursor.fetchone()
+
+    connection.close()
+
+    if row is None or row["vibration_enabled"] is None:
+        return True
+
+    return bool(row["vibration_enabled"])
+
+
+def set_vibration_enabled(user_id, enabled):
+    """Saves the user's vibration preference."""
+
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    cursor.execute(
+        "UPDATE users SET vibration_enabled = ? WHERE id = ?",
+        (1 if enabled else 0, user_id),
+    )
+
+    updated = cursor.rowcount > 0
+
+    connection.commit()
+    connection.close()
+
+    return updated
 
 # =========================================================
 # UPDATE USER PROFILE
@@ -3012,12 +3054,20 @@ def migrate_database():
         cursor.execute("""
             ALTER TABLE users
             ADD COLUMN banned_until TIMESTAMP
-        """)
+        """)# UPDATE USER PROFILE
 
     if "ban_reason" not in columns:
         cursor.execute("""
             ALTER TABLE users
             ADD COLUMN ban_reason TEXT
+        """)
+
+    
+    # Notification vibration preference (default ON)
+    if "vibration_enabled" not in columns:
+        cursor.execute("""
+            ALTER TABLE users
+            ADD COLUMN vibration_enabled INTEGER DEFAULT 1
         """)
 
 
