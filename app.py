@@ -1185,7 +1185,8 @@ LIVE_TIMED_REFRESH_SECONDS = {
 }
 
 
-@st.fragment(run_every="5s")
+
+@st.fragment(run_every="8s")
 def global_live_refresh():
 
     if not st.session_state.logged_in:
@@ -1193,9 +1194,7 @@ def global_live_refresh():
 
     current_time = time.time()
 
-    # Skip if this user's counts were read within the last 4 s (the
-    # click run and the page run of one interaction used to read twice).
-    # Actions that change read-state reset this (see _force_live_check()).
+    # Skip if this user's counts were read within the last 4 s.
     _last = st.session_state.get("_live_checked")
     if (
         _last
@@ -1203,6 +1202,7 @@ def global_live_refresh():
         and current_time - _last[1] < 4
     ):
         return
+
     st.session_state["_live_checked"] = (
         st.session_state.user_id,
         current_time,
@@ -1224,18 +1224,11 @@ def global_live_refresh():
         unread_notification_count,
         unread_rating_count,
         latest_notification_id,
-    ) = (
-        get_live_counts(
-            st.session_state.user_id
-        )
-    )
+    ) = get_live_counts(st.session_state.user_id)
 
     # -----------------------------------------------------
     # FIRST CHECK FOR THIS USER IN THIS SESSION
     # -----------------------------------------------------
-    # Whatever is already unread when a user logs in, is restored or
-    # the page is refreshed is OLD. Only remember the numbers (the
-    # sidebar badges still show them); never raise a toast for them.
 
     if (
         st.session_state.get("_live_baseline_user")
@@ -1255,45 +1248,71 @@ def global_live_refresh():
         previous_rating_count = unread_rating_count
 
     # -----------------------------------------------------
+    # CHECK PREVIOUS NOTIFICATION ID
+    # -----------------------------------------------------
+
+    _prev_latest = st.session_state.get(
+        "_live_latest_notification"
+    )
+
+    previous_latest_id = (
+        _prev_latest[1]
+        if (
+            _prev_latest
+            and _prev_latest[0] == st.session_state.user_id
+        )
+        else None
+    )
+
+    # -----------------------------------------------------
     # NEW NORMAL NOTIFICATION
     # -----------------------------------------------------
 
-    if unread_notification_count > previous_notification_count:
+    if (
+        previous_latest_id is not None
+        and latest_notification_id > previous_latest_id
+    ):
 
-        notifications = get_notifications(
-            st.session_state.user_id,
-            limit=50,
-        )
-
-        for notification in notifications:
-
+        _new_ones = [
+            notification
+            for notification in get_notifications(
+                st.session_state.user_id,
+                limit=50,
+            )
             if (
                 notification["is_read"] == 0
                 and notification["type"] != "rating_received"
+                and notification["id"] > previous_latest_id
+            )
+        ]
+
+        if _new_ones:
+
+            _newest = max(
+                _new_ones,
+                key=lambda n: n["id"]
+            )
+
+            _alert_text = _newest["message"]
+
+            if (
+                isinstance(_alert_text, str)
+                and _alert_text.strip()
             ):
 
-                # The alert flag is only raised together with a real
-                # message, so the toast below can never get an empty one.
-                _alert_text = notification["message"]
+                st.session_state.notification_alert_message = (
+                    _alert_text
+                )
 
-                if isinstance(_alert_text, str) and _alert_text.strip():
+                st.session_state.notification_alert_icon = "🔔"
 
-                    st.session_state.notification_alert_message = (
-                        _alert_text
-                    )
-
-                    st.session_state.notification_alert_icon = "🔔"
-
-                    st.session_state.new_notification_alert = True
-
-                break
+                st.session_state.new_notification_alert = True
 
     # -----------------------------------------------------
     # NEW RATING
     # -----------------------------------------------------
 
     if unread_rating_count > previous_rating_count:
-
         st.session_state.new_rating_alert = True
 
     # -----------------------------------------------------
@@ -1309,20 +1328,8 @@ def global_live_refresh():
     )
 
     # -----------------------------------------------------
-    # AUTOMATIC SCREEN REFRESH (restores the original live
-    # behaviour without re-running the page for nothing)
+    # UPDATE LATEST NOTIFICATION ID
     # -----------------------------------------------------
-    # The counts above are only numbers in session state; nothing on
-    # screen changes until the whole script runs again. Run it again
-    # when something relevant changed, instead of every 10 s.
-
-    _prev_latest = st.session_state.get("_live_latest_notification")
-
-    previous_latest_id = (
-        _prev_latest[1]
-        if _prev_latest and _prev_latest[0] == st.session_state.user_id
-        else None
-    )
 
     st.session_state["_live_latest_notification"] = (
         st.session_state.user_id,
@@ -1333,22 +1340,26 @@ def global_live_refresh():
         previous_latest_id is not None
         and (
             latest_notification_id != previous_latest_id
-            or unread_notification_count != previous_notification_count
-            or unread_rating_count != previous_rating_count
+            or unread_notification_count
+            != previous_notification_count
+            or unread_rating_count
+            != previous_rating_count
         )
     )
 
     page_now = st.session_state.page
 
-    # Only the 5 s timer may trigger the rerun. A run caused by the
-    # user's own click already draws fresh data, and a rerun there could
-    # swallow the click (e.g. "Confirm Help Completed").
+    # Only the 5 s timer may trigger the rerun.
     if (
         page_now in AUTO_REFRESH_PAGES
-        and not st.session_state.get("_live_in_full_run", False)
+        and not st.session_state.get(
+            "_live_in_full_run", False
+        )
     ):
 
-        timed_seconds = LIVE_TIMED_REFRESH_SECONDS.get(page_now)
+        timed_seconds = LIVE_TIMED_REFRESH_SECONDS.get(
+            page_now
+        )
 
         timer_due = (
             timed_seconds is not None
@@ -1359,9 +1370,12 @@ def global_live_refresh():
 
         if something_new or timer_due:
 
-            st.session_state.global_refresh_last_run = current_time
+            st.session_state.global_refresh_last_run = (
+                current_time
+            )
 
             st.rerun()
+
 
 
 def _force_live_check():
