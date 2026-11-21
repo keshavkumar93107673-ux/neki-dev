@@ -12709,3 +12709,15 @@ button[data-testid="stBaseButton-primaryFormSubmit"] p {
     transform: none !important;
     box-shadow: none !important;
 }
+
+
+/* ===== HELP JOURNEY: no dimming while the page refreshes ===== */
+/* Streamlit fades every element to ~30% opacity while a rerun is in
+   progress. On the journey page (live map + chat) that looked like a
+   blur after every message, GPS point and refresh. The small "running"
+   indicator at the top still shows that something is loading. */
+.stApp:has(.journey-request-card) [data-stale="true"],
+.stApp:has(.journey-request-card) [data-testid="stElementContainer"][data-stale="true"] {
+    opacity: 1 !important;
+    transition: none !important;
+}
