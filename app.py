@@ -83,6 +83,8 @@ from database import (
     update_journey_location,
     get_request_messages,
     send_request_message,
+    get_vibration_enabled,
+    set_vibration_enabled,
     get_user_skills,
     get_profile_page_data,
     get_user_with_skills,
@@ -1288,6 +1290,12 @@ def global_live_refresh():
 
         if _new_ones:
 
+            # Vibration (admin notifications are skipped inside).
+            _vibrate_for_notifications(
+                st.session_state.user_id,
+                _new_ones,
+            )
+
             _newest = max(
                 _new_ones,
                 key=lambda n: n["id"]
@@ -1314,6 +1322,11 @@ def global_live_refresh():
 
     if unread_rating_count > previous_rating_count:
         st.session_state.new_rating_alert = True
+
+        _vibrate_for_notifications(
+            st.session_state.user_id,
+            [{"id": latest_notification_id, "type": "rating_received"}],
+        )
 
     # -----------------------------------------------------
     # UPDATE COUNTS
@@ -1349,6 +1362,14 @@ def global_live_refresh():
 
     page_now = st.session_state.page
 
+    # Draw a pending vibration now unless a full rerun is about to
+    # happen (then the main run draws it, see the alert area below).
+    if (
+        page_now not in AUTO_REFRESH_PAGES
+        or st.session_state.get("_live_in_full_run", False)
+    ):
+        _emit_vibration()
+
     # Only the 5 s timer may trigger the rerun.
     if (
         page_now in AUTO_REFRESH_PAGES
@@ -1383,7 +1404,444 @@ def _force_live_check():
     run re-reads the counts instead of waiting for the 4 s window."""
     st.session_state["_live_checked"] = None
 
+# =========================================================
+# VIBRATION FEEDBACK (Android Chrome, only while Neki is open)
+# =========================================================
 
+# Admin notifications never vibrate.
+ADMIN_NOTIFICATION_TYPES = {
+    "account_suspended",
+    "account_banned",
+    "account_restored",
+    "request_removed",
+    "request_restored",
+    "report_reviewed",
+}
+
+# Short and subtle (milliseconds: vibrate, pause, vibrate ...).
+VIBRATION_PATTERNS = {
+    "helper_offer": [50, 40, 50],
+    "helper_offer_declined": [50, 40, 50],
+    "helper_accepted": [80],
+    "help_provided": [60, 50, 100],
+    "help_completed": [60, 50, 100],
+    "rating_received": [40, 50, 40],
+    "chat": [35],
+    "test": [60],
+}
+
+DEFAULT_VIBRATION = [40]
+
+
+def _queue_vibration(event_id, pattern):
+    """Remember a vibration to play the next time it is drawn. Several
+    events queued before that happens are all kept (and played one
+    after another), none overwrites another."""
+
+    pending = st.session_state.get("_vibrate_pending") or []
+
+    if any(item["id"] == str(event_id) for item in pending):
+        return
+
+    pending.append({
+        "id": str(event_id),
+        "pattern": list(pattern),
+    })
+
+    st.session_state["_vibrate_pending"] = pending[-5:]
+
+
+def _vibrate_for_notifications(user_id, notifications):
+    """Queue ONE vibration for the newest community notification in the
+    list. Admin notifications never vibrate. Never raises."""
+
+    try:
+
+        community = [
+            n for n in notifications
+            if n["type"] not in ADMIN_NOTIFICATION_TYPES
+        ]
+
+        if not community:
+            return
+
+        newest = max(community, key=lambda n: n["id"])
+
+        if get_vibration_enabled(user_id):
+            _queue_vibration(
+                f"n{newest['id']}",
+                VIBRATION_PATTERNS.get(newest["type"], DEFAULT_VIBRATION),
+            )
+
+    except Exception:
+        # Vibration is optional; never break the live refresh.
+        pass
+
+
+def _emit_vibration():
+    """Draws the hidden snippet that vibrates, then forgets the request,
+    so one event can only ever be drawn once."""
+
+    pending = st.session_state.pop("_vibrate_pending", None)
+
+    if not pending:
+        return
+
+    # Play at most 3 now; the rest stay queued for the next drawing.
+    pending, later = pending[:3], pending[3:]
+
+    if later:
+        st.session_state["_vibrate_pending"] = later
+
+    components.html(
+        """
+        <script>
+        (() => {
+            const events = %s;
+
+            // Runs inside the PAGE (parent window), not inside this
+            // hidden iframe: Streamlit removes the iframe on the next
+            // rerun, and a tap listener created by it would die with it.
+            function neki_vibrate(win, events, canArm) {
+
+                const nav = win.navigator;
+
+                // Unsupported browser / device: do nothing and never
+                // retry (nothing is stored, nothing is waiting).
+                if (!nav || typeof nav.vibrate !== "function") { return; }
+
+                const SEEN = "neki_vibrated";
+                const WAIT = "neki_vibrate_waiting";
+                const TAPS = ["pointerup", "touchend", "keydown", "click"];
+
+                const read = (key) => {
+                    try {
+                        return JSON.parse(
+                            win.sessionStorage.getItem(key) || "[]"
+                        );
+                    } catch (e) { return []; }
+                };
+
+                const write = (key, value) => {
+                    try {
+                        win.sessionStorage.setItem(
+                            key, JSON.stringify(value)
+                        );
+                    } catch (e) {}
+                };
+
+                // Chrome ignores vibrate() until the user has tapped the
+                // page: keep the events and try again after the first tap.
+                const arm = () => {
+                    if (!canArm || win.__nekiVibrateArmed) { return; }
+                    win.__nekiVibrateArmed = true;
+
+                    const onTap = () => {
+                        TAPS.forEach(t =>
+                            win.document.removeEventListener(
+                                t, onTap, true
+                            )
+                        );
+                        win.__nekiVibrateArmed = false;
+                        attempt(read(WAIT));
+                    };
+
+                    TAPS.forEach(t =>
+                        win.document.addEventListener(t, onTap, true)
+                    );
+                };
+
+                const attempt = (list) => {
+                    const seen = read(SEEN);
+                    const fresh = [];
+
+                    // Duplicate protection: skip events already played.
+                    list.forEach(e => {
+                        if (
+                            !seen.includes(e.id) &&
+                            !fresh.some(f => f.id === e.id)
+                        ) { fresh.push(e); }
+                    });
+
+                    if (!fresh.length) { write(WAIT, []); return; }
+
+                    if (
+                        nav.userActivation &&
+                        !nav.userActivation.hasBeenActive
+                    ) {
+                        write(WAIT, fresh.slice(-5));
+                        arm();
+                        return;
+                    }
+
+                    // At most 3 events at once, one pattern after another.
+                    const batch = fresh.slice(0, 3);
+                    const rest = fresh.slice(3);
+                    const pattern = [];
+
+                    batch.forEach(e => {
+                        if (pattern.length) { pattern.push(150); }
+                        e.pattern.forEach(x => pattern.push(x));
+                    });
+
+                    let played = false;
+                    try { played = nav.vibrate(pattern) === true; }
+                    catch (e) { played = false; }
+
+                    // Only events that were really vibrated count as
+                    // played. A failed attempt is not retried.
+                    if (played) {
+                        batch.forEach(e => seen.push(e.id));
+                        write(SEEN, seen.slice(-50));
+                    }
+
+                    write(WAIT, rest.slice(-5));
+
+                    // Leftovers wait for a LATER tap (not the rest of the
+                    // same tap, which would cut this vibration short).
+                    if (rest.length && canArm) {
+                        win.setTimeout(arm, 1000);
+                    }
+                };
+
+                attempt(read(WAIT).concat(events));
+            }
+
+            try {
+                const parent = window.parent;
+
+                // Install the function into the page once.
+                if (typeof parent.__nekiVibrate !== "function") {
+                    try {
+                        const tag = parent.document.createElement("script");
+                        tag.textContent =
+                            "window.__nekiVibrate = "
+                            + neki_vibrate.toString() + ";";
+                        parent.document.head.appendChild(tag);
+                    } catch (e) {}
+                }
+
+                if (typeof parent.__nekiVibrate === "function") {
+                    parent.__nekiVibrate(parent, events, true);
+                } else {
+                    // The page refused the script: still vibrate now if
+                    // possible; waiting events are retried at the next
+                    // emission (no tap listener from this short-lived frame).
+                    neki_vibrate(parent, events, false);
+                }
+            } catch (e) {}
+        })();
+        </script>
+        """ % json.dumps(pending),
+        height=0,
+        width=0,
+    )
+
+
+def _on_vibration_toggle(user_id):
+    """Profile toggle callback: save the choice. A test vibration plays
+    ONLY when the user switches vibration ON."""
+
+    enabled = bool(
+        st.session_state.get(f"vibration_enabled_{user_id}", True)
+    )
+
+    set_vibration_enabled(user_id, enabled)
+
+    if enabled:
+        _queue_vibration(
+            f"test-{time.time()}",
+            VIBRATION_PATTERNS["test"],
+        )
+
+
+def _check_chat_vibration(request_id, viewer_id, messages):
+    """Vibrate for a new message from the OTHER person. Runs only while
+    this chat is drawn. The first draw (and the first after 60 s away)
+    only records what is already there."""
+
+    try:
+
+        newest_other = max(
+            (
+                m["id"]
+                for m in messages
+                if m["sender_id"] != viewer_id
+            ),
+            default=0,
+        )
+
+        key = f"_chat_seen_{viewer_id}_{request_id}"
+        previous = st.session_state.get(key)
+        now = time.time()
+
+        st.session_state[key] = (
+            max(newest_other, previous[0] if previous else 0),
+            now,
+        )
+
+        if previous is None or now - previous[1] > 60:
+            return
+
+        if (
+            newest_other > previous[0]
+            and get_vibration_enabled(viewer_id)
+        ):
+            _queue_vibration(
+                f"chat-{request_id}-{newest_other}",
+                VIBRATION_PATTERNS["chat"],
+            )
+
+    except Exception:
+        # Vibration is optional; never break the chat.
+        pass
+
+
+# =========================================================
+# PRIVATE CHAT (its own fragment: sending a message re-runs only
+# the chat, not the whole Request Status page)
+# =========================================================
+
+@st.fragment(run_every="5s")
+def render_request_chat(request_id, viewer_id):
+
+    with st.container(key="neki-chat-panel"):
+        st.markdown(
+            """
+            <div class="neki-chat-header" id="neki-private-chat">
+                <div class="neki-chat-title">
+                    💬 Private connection chat
+                </div>
+                <div class="neki-chat-subtitle">
+                    Messages between the requester and helper
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        messages = get_request_messages(
+            request_id,
+            viewer_id,
+        )
+
+        _check_chat_vibration(request_id, viewer_id, messages)
+
+        with st.container(
+            height=280,
+            key="neki-chat-history",
+        ):
+            if not messages:
+                st.markdown(
+                    """
+                    <div class="neki-chat-empty">
+                        👋 No messages yet.<br>
+                        Send a message to start the conversation.
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                for message in messages:
+                    sender_name = html.escape(
+                        str(
+                            message["sender_name"]
+                            if "sender_name" in message.keys()
+                            else "Neighbour"
+                        )
+                    )
+                    message_text = html.escape(
+                        str(
+                            message["message"]
+                            if "message" in message.keys()
+                            else ""
+                        )
+                    ).replace("\n", "<br>")
+
+                    is_mine = message["sender_id"] == viewer_id
+                    bubble_class = "mine" if is_mine else "theirs"
+
+                    created_at = html.escape(
+                        str(
+                            message["created_at"]
+                            if "created_at" in message.keys()
+                            else ""
+                        )
+                    )
+
+                    st.markdown(
+                        f"""
+                        <div class="neki-chat-row {bubble_class}">
+                            <div class="neki-chat-bubble">
+                                <div class="neki-chat-sender">
+                                    {sender_name}
+                                </div>
+                                <div>{message_text}</div>
+                                <div class="neki-chat-time">
+                                    {created_at}
+                                </div>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+
+        with st.form(
+            key=f"journey_chat_form_{request_id}",
+            clear_on_submit=True,
+        ):
+            message_text = st.text_area(
+                "Message",
+                max_chars=2000,
+                placeholder="Type a message...",
+                key=f"journey_chat_input_{request_id}",
+                label_visibility="collapsed",
+            )
+
+            send_message = st.form_submit_button(
+                "➤ Send Message",
+                use_container_width=True,
+            )
+
+        if send_message:
+            if not message_text.strip():
+                st.warning("Please enter a message.")
+            else:
+                # A double tap sends the same text twice within moments;
+                # ignore the second one.
+                _last_sent = st.session_state.get("_chat_last_sent")
+                _now = time.time()
+
+                if (
+                    _last_sent
+                    and _last_sent[0] == request_id
+                    and _last_sent[1] == message_text.strip()
+                    and _now - _last_sent[2] < 2
+                ):
+                    pass
+
+                elif send_request_message(
+                    request_id,
+                    viewer_id,
+                    message_text,
+                ):
+                    st.session_state["_chat_last_sent"] = (
+                        request_id,
+                        message_text.strip(),
+                        _now,
+                    )
+                    # Re-run ONLY the chat so the new message shows at once.
+                    st.rerun(scope="fragment")
+
+                else:
+                    st.error(
+                        "The message could not be sent. "
+                        "Please refresh and try again."
+                    )
+
+        _emit_vibration()
+        
 st.session_state["_live_in_full_run"] = True
 try:
     global_live_refresh()
@@ -1422,6 +1880,9 @@ if st.session_state.get("new_rating_alert", False):
         )
 
     st.session_state.new_rating_alert = False
+
+# Vibration queued by the live refresh (or the Profile test button).
+_emit_vibration()
 
 
 
@@ -5556,6 +6017,12 @@ elif st.session_state.page == "Request Status":
 
                         st.session_state[processed_key] = event_time
 
+                        if location_saved:
+                            # Use the point just saved for this run's map
+                            # and route (the row read above is older).
+                            helper_lat = float(gps_update["latitude"])
+                            helper_lon = float(gps_update["longitude"])
+
                         if not location_saved:
                             st.warning(
                                 "Your location was received, but Neki "
@@ -5618,9 +6085,11 @@ elif st.session_state.page == "Request Status":
             route = None
 
             if has_helper_location:
+                # Rounded to ~11 m so GPS jitter does not trigger a new
+                # (slow, blocking) routing request every time.
                 route = get_driving_route(
-                    origin[0],
-                    origin[1],
+                    round(origin[0], 4),
+                    round(origin[1], 4),
                     destination[0],
                     destination[1],
                 )
@@ -5854,126 +6323,8 @@ elif st.session_state.page == "Request Status":
             "Help Provided",
             "Completed",
         ):
-            with st.container(key="neki-chat-panel"):
-                st.markdown(
-                    """
-                    <div class="neki-chat-header" id="neki-private-chat">
-                        <div class="neki-chat-title">
-                            💬 Private connection chat
-                        </div>
-                        <div class="neki-chat-subtitle">
-                            Messages between the requester and helper
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                messages = get_request_messages(
-                    request_id,
-                    viewer_id,
-                )
-
-            
-
-                
-                with st.container(
-                    height=280,
-                    key="neki-chat-history",
-                ):
-                    if not messages:
-                        st.markdown(
-                            """
-                            <div class="neki-chat-empty">
-                                👋 No messages yet.<br>
-                                Send a message to start the conversation.
-                            </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
-                    else:
-                        import html
-
-                        for message in messages:
-                            sender_name = html.escape(
-                                str(
-                                    message["sender_name"]
-                                    if "sender_name" in message.keys()
-                                    else "Neighbour"
-                                )
-                            )
-                            message_text = html.escape(
-                                str(
-                                    message["message"]
-                                    if "message" in message.keys()
-                                    else ""
-                                )
-                            ).replace("\n", "<br>")
-
-                            is_mine = (
-                                str(message["sender_name"]).strip().casefold()
-                                == str(st.session_state.user_name).strip().casefold()
-                            )
-                            bubble_class = "mine" if is_mine else "theirs"
-
-                            created_at = html.escape(
-                                str(
-                                    message["created_at"]
-                                    if "created_at" in message.keys()
-                                    else ""
-                                )
-                            )
-
-                            st.markdown(
-                                f"""
-                                <div class="neki-chat-row {bubble_class}">
-                                    <div class="neki-chat-bubble">
-                                        <div class="neki-chat-sender">
-                                            {sender_name}
-                                        </div>
-                                        <div>{message_text}</div>
-                                        <div class="neki-chat-time">
-                                            {created_at}
-                                        </div>
-                                    </div>
-                                </div>
-                                """,
-                                unsafe_allow_html=True,
-                            )
-
-
-                with st.form(
-                    key=f"journey_chat_form_{request_id}",
-                    clear_on_submit=True,
-                ):
-                    message_text = st.text_area(
-                        "Message",
-                        max_chars=2000,
-                        placeholder="Type a message...",
-                        key=f"journey_chat_input_{request_id}",
-                        label_visibility="collapsed",
-                    )
-
-                    send_message = st.form_submit_button(
-                        "➤ Send Message",
-                        use_container_width=True,
-                    )
-
-                if send_message:
-                    if not message_text.strip():
-                        st.warning("Please enter a message.")
-                    elif send_request_message(
-                        request_id,
-                        viewer_id,
-                        message_text,
-                    ):
-                        st.success("Message sent.")
-                        st.rerun()
-                    else:
-                        st.error(
-                            "The message could not be sent. "
-                            "Please refresh and try again."
-                        )
+        
+            render_request_chat(request_id, viewer_id)
 
 
         if request["status"] == "Help Provided":
@@ -6670,6 +7021,34 @@ elif st.session_state.page == "Profile":
                     )
 
             st.markdown("")
+
+            # -------------------------------------------------
+            # VIBRATION SETTING
+            # -------------------------------------------------
+
+            _vibration_saved = (
+                current_user["vibration_enabled"]
+                if (
+                    current_user is not None
+                    and "vibration_enabled" in current_user.keys()
+                )
+                else 1
+            )
+
+            st.toggle(
+                "Enable Vibration Notifications",
+                value=(
+                    _vibration_saved is None
+                    or bool(_vibration_saved)
+                ),
+                key=f"vibration_enabled_{st.session_state.user_id}",
+                on_change=_on_vibration_toggle,
+                args=(st.session_state.user_id,),
+                help=(
+                    "A short vibration for new notifications and chat "
+                    "messages while Neki is open (Android Chrome)."
+                ),
+            )
             
 
             if st.button(
