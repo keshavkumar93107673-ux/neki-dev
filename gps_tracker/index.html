@@ -77,12 +77,22 @@
                             // has really moved (~11 m) or 60 s have passed.
                             const elapsed = now - lastSentAt;
 
+                                                    if (lastPosition !== null) {
+                            const distance = Math.hypot(
+                                latitude - lastPosition.latitude,
+                                longitude - lastPosition.longitude
+                            );
+
+                            // Each report re-runs the Streamlit page, so send
+                            // at most one every 10 s, and only when the helper
+                            // has really moved (~11 m) or 60 s have passed.
+                            const elapsed = now - lastSentAt;
+
                             if (
                                 elapsed < 10000 ||
                                 (distance < 0.0001 && elapsed < 60000)
                             ) {
                                 return;
-                            }
                             }
                         }
 
